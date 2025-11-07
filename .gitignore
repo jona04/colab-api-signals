@@ -1,0 +1,46 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.wheelhouse/
+.coverage*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.ipynb_checkpoints/
+
+# --- Virtualenv ---
+venv/
+.envrc
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Logs / temp ---
+*.log
+logs/
+tmp/
+*.tmp
+
+# --- Secrets ---
+*.key
+*.pem
+*.cert
+.env
+.env.*
+.env.local
+.envrc
+
+mongo_data/*

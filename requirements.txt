@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+binance-connector
+motor
+pydantic
+structlog
+tenacity
+pybreaker
+python-dotenv
+watchfiles
+pandas
+httpx
