@@ -225,3 +225,84 @@ class PipelineHttpClient:
         except Exception as exc:
             self._logger.exception("post_stake error for %s: %s", url, exc)
         return None
+    
+    async def post_pancake_batch_unstake_exit_swap_open(
+        self,
+        alias: str,
+        token_in: str,
+        token_out: str,
+        amount_in: Optional[float] = None,
+        amount_in_usd: Optional[float] = None,
+        fee: Optional[int] = None,
+        sqrt_price_limit_x96: Optional[int] = None,
+        slippage_bps: int = 50,
+        max_budget_usd: Optional[float] = None,
+        pool_override: Optional[str] = None,
+        lower_tick: Optional[int] = None,
+        upper_tick: Optional[int] = None,
+        lower_price: Optional[float] = None,
+        upper_price: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        POST /api/vaults/pancake/{alias}/batch/unstake-exit-swap-open
+
+        Atomically:
+          1) Unstake (if staked & gauge configured)
+          2) Exit current position to idle balances in the vault
+          3) Optional: swap exact-in on Pancake v3 (same rules as /swap/exact-in)
+          4) Open new position using all idle balances and the target range
+             (same rules as /open).
+
+        body (PancakeBatchRequest):
+        {
+          "token_in": "0x...",
+          "token_out": "0x...",
+          "amount_in": float | null,
+          "amount_in_usd": float | null,
+          "fee": int | null,
+          "sqrt_price_limit_x96": int | null,
+          "slippage_bps": int,
+          "max_budget_usd": float | null,
+          "pool_override": "0x..." | null,
+          "lower_tick": int | null,
+          "upper_tick": int | null,
+          "lower_price": float | null,
+          "upper_price": float | null
+        }
+        """
+        url = f"{self._base_url}/api/vaults/pancake/{alias}/batch/unstake-exit-swap-open"
+
+        payload = {
+            "token_in": token_in,
+            "token_out": token_out,
+            "amount_in": amount_in,
+            "amount_in_usd": amount_in_usd,
+            "fee": fee,
+            "sqrt_price_limit_x96": sqrt_price_limit_x96,
+            "slippage_bps": slippage_bps,
+            "max_budget_usd": max_budget_usd,
+            "pool_override": pool_override,
+            "lower_tick": lower_tick,
+            "upper_tick": upper_tick,
+            "lower_price": lower_price,
+            "upper_price": upper_price,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.post(url, json=payload)
+                if r.status_code == 200:
+                    return r.json()
+                self._logger.warning(
+                    "pancake batch non-200 %s: %s %s",
+                    url,
+                    r.status_code,
+                    r.text,
+                )
+        except Exception as exc:
+            self._logger.exception(
+                "post_pancake_batch_unstake_exit_swap_open error for %s: %s",
+                url,
+                exc,
+            )
+        return None

@@ -241,13 +241,11 @@ class EvaluateActiveStrategiesUseCase:
                 "last_event_bar": i_since_open
             })
 
-            if (i_since_open >= cooloff) and (
-                out_above_streak >= breakout_confirm or out_below_streak >= breakout_confirm
-            ):
+            if out_above_streak >= breakout_confirm or out_below_streak >= breakout_confirm:
                 trigger = "cross_max" if out_above_streak >= breakout_confirm else "cross_min"
 
             # 3) gate high vol (evita reabrir se já high_vol)
-            if not trigger and (i_since_open >= cooloff):
+            if not trigger: # and (i_since_open >= cooloff):
                 vol_th = params.get("vol_high_threshold_pct")
                 if (atr_pct is not None and vol_th is not None and atr_pct > float(vol_th)) and pool_type_cur != "high_vol":
                     trigger = "high_vol"

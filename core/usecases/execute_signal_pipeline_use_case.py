@@ -171,6 +171,176 @@ class ExecuteSignalPipelineUseCase:
                             },
                         )
                     
+                    
+                    elif action == "BATCH_REQUEST":
+                        # after withdraw, capital is idle in vault.
+                        st = await self._lp.get_status(dex, alias)
+                        if not st:
+                            raise RuntimeError("status_unavailable_before_swap")
+                        
+                        lower_price = step["payload"].get("lower_price")
+                        upper_price = step["payload"].get("upper_price")
+                        
+                        holdings = st.get("holdings", {}) or {}
+                        totals = holdings.get("totals", {}) or {}
+                        amt0 = float(totals.get("token0", 0.0))
+                        amt1 = float(totals.get("token1", 0.0))
+                        
+                        prices = st.get("prices", {}) or {}
+                        current_prices = prices.get("current", {}) or {}
+                        p_t1_t0 = float(current_prices.get("p_t1_t0", 0.0))
+                    
+                        # log snapshot BEFORE swap calc
+                        await self._append_log(
+                            episode_id,
+                            {
+                                "step": action,
+                                "phase": "pre_calc",
+                                "attempt": attempt + 1,
+                                "holdings_raw": {
+                                    "amt0": amt0,
+                                    "amt1": amt1,
+                                },
+                                "price_snapshot": {
+                                    "p_t1_t0": p_t1_t0,
+                                },
+                            },
+                        )
+
+                        if p_t1_t0 <= 0.0:
+                            # sem preço confiável = não dá pra calcular USD; nesse caso a gente não swapa
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "phase": "skip_no_price",
+                                    "attempt": attempt + 1,
+                                    "reason": "p_t1_t0 <= 0",
+                                },
+                            )
+                            success = True
+                        else:
+                            usd0 = amt0 * p_t1_t0  # quanto vale nosso token0 em USDC
+                            usd1 = amt1            # token1 já é USDC
+                            total_usd = usd0 + usd1
+                            P = p_t1_t0
+                            
+                            Pa = step["payload"].get("lower_price")
+                            Pb = step["payload"].get("upper_price")
+                            L_target = self._L_closed(total_usd, P, Pa, Pb)
+                            t0_needed, t1_needed = self._tokens_from_L(L_target, Pa, Pb, P)
+                            
+                            majority_flag = episode.get("majority_on_open")
+                            
+                            falta_t0 = None
+                            falta_t1 = None
+                            t0_needed_usd = None
+                            if majority_flag == "token1":
+                                # queremos alinhar token1 (USDC-like)
+                                falta_t1 = t1_needed - usd1
+                                if falta_t1 > 0:
+                                    token_in_addr = token0_addr  # vender WETH
+                                    token_out_addr = token1_addr # comprar USDC
+                                    req_amount_usd = falta_t1
+                                    direction = "WETH->USDC"
+                                else:
+                                    token_in_addr = token1_addr  # vender USDC
+                                    token_out_addr = token0_addr # comprar WETH
+                                    req_amount_usd = (-falta_t1)
+                                    direction = "USDC->WETH"
+                                    
+                            else:
+                                # majority_flag == "token2" (WETH)
+                                t0_needed_usd = t0_needed * P
+                                falta_t0  = t0_needed_usd - usd0
+                                if falta_t0 > 0:
+                                    token_in_addr = token1_addr  # vender USDC
+                                    token_out_addr = token0_addr # comprar WETH
+                                    req_amount_usd = falta_t0
+                                    direction = "USDC->WETH"
+                                else:
+                                    token_in_addr = token0_addr  # vender WETH
+                                    token_out_addr = token1_addr # comprar USDC
+                                    req_amount_usd = (-falta_t0)
+                                    direction = "WETH->USDC"
+
+                            # para evitar o valor exato e causar erros de saldo
+                            req_amount_usd = req_amount_usd - 0.01
+                            
+                            # log cálculo alvo
+                            await self._append_log(
+                                episode_id,
+                                {
+                                    "step": action,
+                                    "phase": "calc_swap",
+                                    "attempt": attempt + 1,
+                                    "majority_flag": majority_flag,
+                                    "p_t1_t0": p_t1_t0,
+                                    "usd0": usd0,
+                                    "usd1": usd1,
+                                    "total_usd": total_usd,
+                                    "t0_needed":t0_needed if t0_needed else None,
+                                    "t1_needed": t1_needed if t1_needed else None,
+                                    "falta_t1": falta_t1 if falta_t1 else None,
+                                    "falta_t0": falta_t0 if falta_t0 else None,
+                                    "t0_needed_usd": t0_needed_usd if t0_needed_usd else None,
+                                    "req_amount_usd": req_amount_usd if req_amount_usd else None,
+                                    "direction": direction,
+                                    "request_amount_in_usd": req_amount_usd,
+                                    "request_open": {
+                                        "lower_price": lower_price,
+                                        "upper_price": upper_price,
+                                    },
+                                },
+                            )
+
+                            # se req_amount_usd ~ 0, nada a fazer
+                            if req_amount_usd <= 0.0:
+                                await self._append_log(
+                                    episode_id,
+                                    {
+                                        "step": action,
+                                        "phase": "skip_small",
+                                        "attempt": attempt + 1,
+                                        "reason": "no meaningful delta",
+                                    },
+                                )
+                                success = True
+                            else:
+                                res = await self._lp.post_pancake_batch_unstake_exit_swap_open(
+                                    alias=alias,
+                                    token_in=token_in_addr,
+                                    token_out=token_out_addr,
+                                    amount_in_usd=req_amount_usd if direction == "WETH->USDC" else None,
+                                    amount_in=req_amount_usd if direction == "USDC->WETH" else None,
+                                    lower_price=lower_price,
+                                    upper_price=upper_price,
+                                )
+
+                                await self._append_log(
+                                    episode_id,
+                                    {
+                                        "step": action,
+                                        "phase": "swap_call",
+                                        "attempt": attempt + 1,
+                                        "request": {
+                                            "token_in": token_in_addr,
+                                            "token_out": token_out_addr,
+                                            "amount_in_usd": req_amount_usd,
+                                        },
+                                        "request_open": {
+                                            "lower_price": lower_price,
+                                            "upper_price": upper_price,
+                                        },
+                                        "response": res,
+                                    },
+                                )
+
+                                if res is None:
+                                    raise RuntimeError("swap_failed")
+
+                                success = True
+                        
                     elif action == "UNSTAKE":
                         # só desestaca se status indica que há gauge e está staked
                         st = await self._lp.get_status(dex, alias)
