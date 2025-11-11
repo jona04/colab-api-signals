@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import logging
 from typing import Dict, List, Optional, Tuple
 
@@ -74,7 +75,7 @@ class EvaluateActiveStrategiesUseCase:
         Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
         """
         tiers: List[Dict] = list(params.get("tiers", []))
-        last_tier = tiers[-1].get("name")
+        
         # skew base
         if pool_type == "high_vol":
             if trend == "down":
@@ -85,15 +86,14 @@ class EvaluateActiveStrategiesUseCase:
                 majority = "token2"; mode = "trend_up"
                 pct_below_base = float(0.01)  # curto abaixo
                 pct_above_base = float(0.09)   # largo acima
-        elif pool_type in [t['name'] for t in tiers]:
+        elif pool_type in [t["name"] for t in tiers]:
+            # tiers usam banda simétrica no runtime, como no backtest simplificado
             if trend == "down":
                 majority = "token1"; mode = "trend_down"
-                pct_below_base = float(0.05)   # largo abaixo
-                pct_above_base = float(0.05)  # curto acima
             else:
                 majority = "token2"; mode = "trend_up"
-                pct_below_base = float(0.05)  # curto abaixo
-                pct_above_base = float(0.05)   # largo acima
+            pct_below_base = 0.05
+            pct_above_base = 0.05
         else:
             if trend == "down":
                 majority = "token1"; mode = "trend_down"
@@ -222,11 +222,14 @@ class EvaluateActiveStrategiesUseCase:
             # defaults de campos antigos
             Pa_cur = float(current.get("Pa"))
             Pb_cur = float(current.get("Pb"))
+            pool_type_cur = current.get("pool_type", "standard")
+            mode_on_open_cur = current.get("mode_on_open", "")
+            majority_on_open_cur = current.get("majority_on_open", "")
+            
             i_since_open = int(current.get("last_event_bar", 0)) + 1
             out_above_streak = int(current.get("out_above_streak", 0))
             out_below_streak = int(current.get("out_below_streak", 0))
-            pool_type_cur = current.get("pool_type", "standard")
-            mode_on_open_cur = current.get("mode_on_open", "")
+            atr_streaks: Dict = dict(current.get("atr_streak", {}))
             
             trigger: Optional[str] = None
 
@@ -241,55 +244,76 @@ class EvaluateActiveStrategiesUseCase:
                 "last_event_bar": i_since_open
             })
 
-            if out_above_streak >= breakout_confirm or out_below_streak >= breakout_confirm:
-                trigger = "cross_max" if out_above_streak >= breakout_confirm else "cross_min"
+            if out_above_streak >= breakout_confirm:
+                trigger = "cross_max"
+            elif out_below_streak >= breakout_confirm:
+                trigger = "cross_min"
 
             # 3) gate high vol (evita reabrir se já high_vol)
-            if not trigger: # and (i_since_open >= cooloff):
+            if not trigger:
                 vol_th = params.get("vol_high_threshold_pct")
-                if (atr_pct is not None and vol_th is not None and atr_pct > float(vol_th)) and pool_type_cur != "high_vol":
+                if (
+                    atr_pct is not None and vol_th is not None
+                    and atr_pct > float(vol_th)
+                    and pool_type_cur != "high_vol"
+                ):
                     trigger = "high_vol"
             
-            # 3.1) Reabre high vol do lado certo
-            if pool_type_cur == "high_vol" and mode_on_open_cur == "trend_down" and ema_f - ema_s > 10:
-                trigger = "high_vol"
-            if pool_type_cur == "high_vol" and mode_on_open_cur == "trend_up" and ema_f - ema_s < -10:
-                trigger = "high_vol"
+            # flip de direção dentro de high_vol
+            if not trigger and pool_type_cur == "high_vol":
+                diff = ema_f - ema_s
+                if mode_on_open_cur == "trend_down" and diff > 10:
+                    trigger = "high_vol"
+                elif mode_on_open_cur == "trend_up" and diff < -10:
+                    trigger = "high_vol"
             
             # 4) tiers — apenas se in-range e sem trigger ainda
-            if not trigger and (Pa_cur < P < Pb_cur) and (i_since_open >= cooloff):
-                tiers: List[Dict] = list(params.get("tiers", []))
-                tiers.sort(key=lambda t: t["atr_pct_threshold"])
-                streaks = current.get("atr_streak", {})
-                chosen = None
-                for tier in tiers:
-                    if pool_type_cur == tier["name"]:
-                        break
-                    if pool_type_cur not in tier.get("allowed_from", []) and pool_type_cur != tier["name"]:
-                        continue
-                    # atualiza streak
-                    thr = float(tier["atr_pct_threshold"])
+            in_range_now = (Pa_cur < P < Pb_cur)
+            if (
+                not trigger
+                and in_range_now
+                and i_since_open >= cooloff
+            ):
+                tiers_cfg: List[Dict] = list(params.get("tiers", []))
+                chosen_tier = None
+                for tier in reversed(tiers_cfg):
                     name = tier["name"]
+                    allowed_from = tier.get("allowed_from", []) or []
+                    if pool_type_cur == name:
+                        break  # já estamos neste estreitamento
+                    if pool_type_cur not in allowed_from:
+                        continue
                     
-                    streaks[name] = int(streaks.get(name, 0)) + 1 if (atr_pct is not None and atr_pct <= thr) else 0
-                    if streaks[name] >= int(tier["bars_required"]):
-                        chosen = tier
+                    thr = float(tier["atr_pct_threshold"])
+                    bars_req = int(tier["bars_required"])
+                    
+                    if atr_pct is not None and atr_pct <= thr:
+                        atr_streaks[name] = int(atr_streaks.get(name, 0)) + 1
+                    else:
+                        atr_streaks[name] = 0
+                    
+                    if atr_streaks[name] >= bars_req:
+                        chosen_tier = tier
                         break
-                if chosen:
-                    trigger = f"tighten_{chosen['name']}"
-                # persiste streaks (mesmo sem trigger)
-                await self._episode_repo.update_partial(current["_id"], {"atr_streak": streaks})
+                    
+                await self._episode_repo.update_partial(current["_id"], {
+                    "atr_streak": atr_streaks,
+                })
 
-            # 5) sem gatilho → segue
+                if chosen_tier:
+                    trigger = f"tighten_{chosen_tier['name']}"
+
+            # 5) sem gatilho -> segue
             if not trigger:
                 continue
 
             # 6) fechar episódio atual
+            now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
             await self._episode_repo.close_episode(
                 current["_id"],
                 {
                     "close_time": ts,
-                    "close_time_iso": snapshot.get("created_at_iso", None),
+                    "close_time_iso": now_iso,
                     "close_reason": trigger,
                     "close_price": P,
                 },
@@ -300,14 +324,24 @@ class EvaluateActiveStrategiesUseCase:
             # helper para abrir com "total width"; aplica preserve quando aplicável
             def _open_with_width(next_pool_type: str, total_width_override: Optional[float]):
                 # decide total width alvo
-                total_width_pct = (
-                    float(total_width_override) if total_width_override is not None
-                    else (float(params.get("high_vol_max_major_side_pct")) if next_pool_type == "high_vol"
-                          else float(params.get("standard_max_major_side_pct")))
-                )
-                Pa_new, Pb_new, mode_now, majority_now, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
-                    P, trend_now, params, atr_pct, total_width_override=total_width_pct, pool_type=next_pool_type
-                )
+                if total_width_override is not None:
+                    total_width_pct = float(total_width_override)
+                elif next_pool_type == "high_vol":
+                    total_width_pct = float(params.get("high_vol_max_major_side_pct", 0.10))
+                else:
+                    total_width_pct = float(params.get("standard_max_major_side_pct", 0.05))
+
+                total_width_pct = max(total_width_pct, 2e-6)
+                
+                Pa_new, Pb_new, mode_now, majority_now, _, pct_below_base, pct_above_base = \
+                        self._pick_band_for_trend_totalwidth(
+                            P,
+                            trend_now,
+                            params,
+                            atr_pct,
+                            total_width_override=total_width_pct,
+                            pool_type=next_pool_type,
+                        )
                     
                 if majority_now == "token1":
                     major_pct = pct_below_base*10
@@ -342,37 +376,76 @@ class EvaluateActiveStrategiesUseCase:
                 }
 
             # 7) escolher próxima pool
-            new_ep = None
+            new_ep: Optional[Dict] = None
+            tiers_cfg: List[Dict] = list(params.get("tiers", []))
+            
             if trigger in ("cross_min", "cross_max"):
-                tiers = params.get("tiers", [])
-                if tiers:
-                    tiers_sorted = sorted(tiers, key=lambda t: t["atr_pct_threshold"])
-                    for tier in reversed(tiers_sorted):  # mais estreito primeiro
-                        new_ep = _open_with_width(tier["name"], float(tier["max_major_side_pct"]))
+                chosen_tier = None
+                for tier in reversed(tiers_cfg):
+                    name = tier["name"]
+                    allowed_from = tier.get("allowed_from", []) or []
+                    if pool_type_cur not in allowed_from:
+                        continue
+                    
+                    thr = float(tier["atr_pct_threshold"])
+                    bars_req = int(tier["bars_required"])
+                    # usa ATR do snapshot atual para confirmar
+                    if atr_pct is not None and atr_pct <= thr:
+                        chosen_tier = tier
                         break
-                if new_ep is None:
-                    new_ep = _open_with_width("standard", float(params.get("standard_max_major_side_pct", 0.05)))
+                        
+                if chosen_tier:
+                    new_ep = _open_with_width(
+                        chosen_tier["name"],
+                        float(chosen_tier["max_major_side_pct"])
+                    )
+                else:
+                    new_ep = _open_with_width(
+                        "standard",
+                        float(params.get("standard_max_major_side_pct", 0.05))
+                    )
+                    
             elif trigger == "high_vol":
                 new_ep = _open_with_width("high_vol", float(params.get("high_vol_max_major_side_pct", 0.10)))
             elif trigger.startswith("tighten_"):
-                tier_name = trigger.split("_", 1)[1]
-                tier = next((t for t in params.get("tiers", []) if t["name"] == tier_name), None)
-                width = float(tier["max_major_side_pct"]) if tier else float(params.get("standard_max_major_side_pct", 0.05))
-                new_ep = _open_with_width(tier_name if tier else "standard", width)
+                chosen_tier = None
+                for tier in reversed(tiers_cfg):
+                    name = tier["name"]
+                    allowed_from = tier.get("allowed_from", []) or []
+                    if pool_type_cur not in allowed_from:
+                        continue
+                    thr = float(tier["atr_pct_threshold"])
+                    bars_req = int(tier["bars_required"])
+                    if atr_pct is not None and atr_pct <= thr:
+                        chosen_tier = tier
+                        break
+                if chosen_tier:
+                    new_ep = _open_with_width(
+                        chosen_tier["name"],
+                        float(chosen_tier["max_major_side_pct"])
+                    )
+                else:
+                    new_ep = _open_with_width(
+                        "standard",
+                        float(params.get("standard_max_major_side_pct", 0.05))
+                    )
 
-            if new_ep:
-                await self._episode_repo.open_new(new_ep)
-                signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
-                if signal_plan:
-                    await self._signal_repo.upsert_signal({
-                        "strategy_id": strat_id,
-                        "indicator_set_id": indicator_set["cfg_hash"],
-                        "cfg_hash": indicator_set["cfg_hash"],
-                        "symbol": symbol,
-                        "ts": ts,
-                        "signal_type": signal_plan["signal_type"],
-                        "steps": signal_plan["steps"],
-                        "episode": signal_plan["episode"], 
-                        "status": "PENDING",
-                        "attempts": 0,
-                    })
+            if not new_ep:
+                continue
+            
+            await self._episode_repo.open_new(new_ep)
+            signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
+            if signal_plan:
+                await self._signal_repo.upsert_signal({
+                    "strategy_id": strat_id,
+                    "indicator_set_id": indicator_set["cfg_hash"],
+                    "cfg_hash": indicator_set["cfg_hash"],
+                    "symbol": symbol,
+                    "ts": ts,
+                    "signal_type": signal_plan["signal_type"],
+                    "steps": signal_plan["steps"],
+                    "episode": signal_plan["episode"], 
+                    "status": "PENDING",
+                    "attempts": 0,
+                    "last_episode": current
+                })

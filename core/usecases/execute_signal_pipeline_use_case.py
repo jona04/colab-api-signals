@@ -34,8 +34,8 @@ class ExecuteSignalPipelineUseCase:
         max_retries: int = 3,
         base_backoff_sec: float = 1.0,
     ):
-        self._signals = signal_repo
-        self._episodes = episode_repo
+        self._signal_repo = signal_repo
+        self._episode_repo = episode_repo
         self._lp = lp_client
         self._logger = logger or logging.getLogger(self.__class__.__name__)
         self._max_retries = max_retries
@@ -92,16 +92,16 @@ class ExecuteSignalPipelineUseCase:
         """
         Fetch up to N pending signals and attempt to execute them.
         """
-        pending = await self._signals.list_pending(limit=50)
+        pending = await self._signal_repo.list_pending(limit=50)
         for sig in pending:
             try:
                 ok = await self._process_single_signal(sig)
                 if ok:
-                    await self._signals.mark_success(sig)
+                    await self._signal_repo.mark_success(sig)
                 # if not ok, _process_single_signal already marked FAILED
             except Exception as exc:
                 self._logger.exception("Unexpected error processing signal %s: %s", sig, exc)
-                await self._signals.mark_failure(sig, f"UNEXPECTED: {exc}")
+                await self._signal_repo.mark_failure(sig, f"UNEXPECTED: {exc}")
 
     async def _append_log(
         self,
@@ -114,7 +114,7 @@ class ExecuteSignalPipelineUseCase:
         if not episode_id:
             return
         try:
-            await self._episodes.append_execution_log(episode_id, base)
+            await self._episode_repo.append_execution_log(episode_id, base)
         except Exception as log_exc:
             # logging de fallback pra não matar o fluxo
             self._logger.warning("Failed to append_execution_log for %s: %s", episode_id, log_exc)
@@ -126,15 +126,21 @@ class ExecuteSignalPipelineUseCase:
         Returns True on full success, False if FAILED.
         """
         steps: List[Dict] = sig.get("steps") or []
+        
+        last_episode = sig.get("last_episode") or {}
+        last_episode_id = last_episode.get("_id")
+        
         episode = sig.get("episode") or {}
-
         episode_id = episode.get("_id")
+        
         dex = episode.get("dex")
         alias = episode.get("alias")
         token0_addr = episode.get("token0_address")
         token1_addr = episode.get("token1_address")
         majority_flag = episode.get("majority_on_open")
 
+        batch_res = None
+        
         for step in steps:
             action = step.get("action")
             self._logger.info("Executing step %s for %s/%s", action, dex, alias)
@@ -307,7 +313,7 @@ class ExecuteSignalPipelineUseCase:
                                 )
                                 success = True
                             else:
-                                res = await self._lp.post_pancake_batch_unstake_exit_swap_open(
+                                batch_res = await self._lp.post_pancake_batch_unstake_exit_swap_open(
                                     alias=alias,
                                     token_in=token_in_addr,
                                     token_out=token_out_addr,
@@ -332,11 +338,11 @@ class ExecuteSignalPipelineUseCase:
                                             "lower_price": lower_price,
                                             "upper_price": upper_price,
                                         },
-                                        "response": res,
+                                        "response": batch_res,
                                     },
                                 )
 
-                                if res is None:
+                                if batch_res is None:
                                     raise RuntimeError("swap_failed")
 
                                 success = True
@@ -749,7 +755,7 @@ class ExecuteSignalPipelineUseCase:
 
             if not success:
                 # hard fail -> mark FAILED and stop this signal
-                await self._signals.mark_failure(sig, last_err or f"{action} failed")
+                await self._signal_repo.mark_failure(sig, last_err or f"{action} failed")
                 
                 await self._append_log(
                     episode_id,
@@ -770,4 +776,65 @@ class ExecuteSignalPipelineUseCase:
                 "status": "SENT",
             },
         )
+        
+        try:
+            if batch_res and last_episode_id and last_episode:
+                before = batch_res.get("before") or {}
+                totals = before.get("totals") or {}
+                vault_idle = before.get("vault_idle") or {}
+                in_position = before.get("in_position") or {}
+                total_position_usd = float(in_position.get("usd") or 0.0)
+                
+                gauge_rewards = before.get("gauge_rewards") or {}
+                rewards_collected_cum = before.get("rewards_collected_cum") or {}
+                fees_uncollected = before.get("fees_uncollected") or {}
+                fees_collected_cum = before.get("fees_collected_cum") or {}
+
+                gauge_rewards_uncollected_usd = float(gauge_rewards.get("pending_usd_est") or 0.0)
+                fees_uncollected_usd = float(fees_uncollected.get("usd") or 0.0)
+                total_fees = gauge_rewards_uncollected_usd + fees_uncollected_usd
+
+                qty_candles = int(last_episode.get("last_event_bar") or 0)
+
+                percentage_uncollected_fee = (
+                    (total_fees / total_position_usd)
+                    if total_position_usd > 0
+                    else None
+                )
+
+
+                APR_daily = None
+                APR_annualy = None
+                if total_position_usd > 0 and total_fees > 0 and qty_candles > 0:
+                    # 1440 / qty_candles ≈ number of bars per day
+                    APR_daily = (1440.0 / float(qty_candles)) * (total_fees / total_position_usd)
+                    # simple 12*30 ~ 360d approximation
+                    APR_annualy = APR_daily * 12.0 * 30.0
+
+                metrics = {
+                    "totals": totals,
+                    "vault_idle": vault_idle,
+                    "in_position": in_position,
+                    "gauge_rewards": gauge_rewards,
+                    "rewards_collected_cum": rewards_collected_cum,
+                    "fees_uncollected": fees_uncollected,
+                    "fees_collected_cum": fees_collected_cum,
+                    "total_fees": total_fees,
+                    "qty_candles": qty_candles,
+                    "percentage_uncollected_fee": percentage_uncollected_fee,
+                    "APR_daily": APR_daily * 100 if APR_daily is not None else None,
+                    "APR_annualy": APR_annualy * 100 if APR_annualy is not None else None,
+                }
+
+                await self._episode_repo.update_partial(
+                    last_episode_id,
+                    {
+                        "metrics": {
+                            **metrics,
+                        }
+                    },
+                )
+        except:
+            pass
+        
         return True
