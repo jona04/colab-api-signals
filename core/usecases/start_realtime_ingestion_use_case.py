@@ -86,19 +86,21 @@ class StartRealtimeIngestionUseCase:
 
             # Trigger indicators and evaluation for each ACTIVE indicator set of this symbol
             if self._compute_indicators is not None and self._indicator_set_repo and self._evaluate_uc:
-                active_sets = await self._indicator_set_repo.get_active_by_symbol(self._symbol)
-                for indset in active_sets:
-                    snapshot = await self._compute_indicators.execute_for_indicator_set(
-                        symbol=self._symbol,
-                        interval=self._interval,
-                        ema_fast=int(indset["ema_fast"]),
-                        ema_slow=int(indset["ema_slow"]),
-                        atr_window=int(indset["atr_window"]),
-                        indicator_set_id=indset.get("_id", indset["cfg_hash"]),
-                        cfg_hash=indset["cfg_hash"],
-                    )
-                    if snapshot:
-                        await self._evaluate_uc.execute_for_snapshot(indicator_set=indset, snapshot=snapshot)
-
+                try:
+                    active_sets = await self._indicator_set_repo.get_active_by_symbol(self._symbol)
+                    for indset in active_sets:
+                        snapshot = await self._compute_indicators.execute_for_indicator_set(
+                            symbol=self._symbol,
+                            interval=self._interval,
+                            ema_fast=int(indset["ema_fast"]),
+                            ema_slow=int(indset["ema_slow"]),
+                            atr_window=int(indset["atr_window"]),
+                            indicator_set_id=indset.get("_id", indset["cfg_hash"]),
+                            cfg_hash=indset["cfg_hash"],
+                        )
+                        if snapshot:
+                            await self._evaluate_uc.execute_for_snapshot(indicator_set=indset, snapshot=snapshot)
+                except Exception as exc:
+                    self._logger.exception("Failed to compute indicators/evaluate strategies: %s", exc)
         except Exception as exc:
             self._logger.exception("Failed to process closed kline: %s", exc)

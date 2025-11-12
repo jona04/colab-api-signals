@@ -5,7 +5,11 @@ import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from adapters.external.binance.binance_rest_client import BinanceRestClient
+from adapters.external.database.mongodb_client import get_mongo_client
 from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
+from config.settings import settings
+from core.usecases.backfill_candles_use_case import BackfillCandlesUseCase
 from core.usecases.execute_signal_pipeline_use_case import ExecuteSignalPipelineUseCase
 
 from core.services.strategy_reconciler_service import StrategyReconcilerService
@@ -41,8 +45,8 @@ class RealtimeSupervisor:
         self._mongo_client: AsyncIOMotorClient | None = None
         self._db = None
 
-        self._ws_client: BinanceWebsocketClient | None = None
-        self._ingestion_use_case: StartRealtimeIngestionUseCase | None = None
+        self._ws_clients: list[BinanceWebsocketClient] = []
+        self._ingestions: list[StartRealtimeIngestionUseCase] = []
 
         self._signal_executor_uc: ExecuteSignalPipelineUseCase | None = None
         self._executor_task: asyncio.Task | None = None
@@ -56,14 +60,9 @@ class RealtimeSupervisor:
         """
         Create connections, ensure indexes, and start realtime ingestion.
         """
-        mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-        mongodb_db_name = os.getenv("MONGODB_DB_NAME", "signals_db")
-        symbol = os.getenv("BINANCE_STREAM_SYMBOL", "ethusdt")
-        interval = os.getenv("BINANCE_STREAM_INTERVAL", "1m")
-
-        # Mongo
-        self._mongo_client = AsyncIOMotorClient(mongodb_uri)
-        self._db = self._mongo_client[mongodb_db_name]
+        # Mongo client centralizado
+        self._mongo_client = get_mongo_client()
+        self._db = self._mongo_client[settings.MONGODB_DB_NAME]
 
         # --- Core repos for candles / indicators
         candle_repo = CandleRepositoryMongoDB(self._db)
@@ -82,9 +81,6 @@ class RealtimeSupervisor:
             indicator_service=indicator_svc,
         )
 
-        # WebSocket client
-        self._ws_client = BinanceWebsocketClient()
-
         # Strategy infra
         indicator_set_repo = IndicatorSetRepositoryMongoDB(self._db)
         strategy_repo = StrategyRepositoryMongoDB(self._db)
@@ -96,9 +92,16 @@ class RealtimeSupervisor:
         await episode_repo.ensure_indexes()
         await signal_repo.ensure_indexes()
 
+        # Binance REST client for backfill
+        binance_rest = BinanceRestClient(base_url=settings.BINANCE_REST_BASE_URL)
+        backfill_uc = BackfillCandlesUseCase(
+            binance_client=binance_rest,
+            candle_repository=candle_repo,
+            processing_offset_repository=offset_repo,
+        )
+        
         # pipeline/vault HTTP client (our LP bridge)
-        pipeline_base_url = os.getenv("LP_BASE_URL", "http://172.17.0.1:8000")
-        pipeline_http = PipelineHttpClient(pipeline_base_url)
+        pipeline_http = PipelineHttpClient(settings.LP_BASE_URL)
 
         # Reconciler: turns desired band -> ordered steps [COLLECT, WITHDRAW, SWAP, REBALANCE]
         reconciler = StrategyReconcilerService(pipeline_http)
@@ -111,25 +114,13 @@ class RealtimeSupervisor:
             reconciling_service=reconciler,
         )
 
-        # Realtime ingestion orchestration (candles -> indicators -> evaluate strategies)
-        self._ingestion_use_case = StartRealtimeIngestionUseCase(
-            symbol=symbol,
-            interval=interval,
-            websocket_client=self._ws_client,
-            candle_repository=candle_repo,
-            processing_offset_repository=offset_repo,
-            compute_indicators_use_case=compute_indicators_uc,
-            indicator_set_repo=indicator_set_repo,
-            evaluate_use_case=evaluate_uc,
-        )
-
-        # Signal executor: drains PENDING and hits the pipeline HTTP in loop
+        # Signal executor use case (background loop)
         self._signal_executor_uc = ExecuteSignalPipelineUseCase(
             signal_repo=signal_repo,
-            episode_repo = episode_repo,
+            episode_repo=episode_repo,
             lp_client=pipeline_http,
         )
-
+        
         async def _executor_loop():
             """
             Forever-loop for executing pending signals. This runs in the background.
@@ -140,28 +131,81 @@ class RealtimeSupervisor:
                 except Exception as exc:
                     self._logger.exception("signal executor loop error: %s", exc)
                 await asyncio.sleep(5)
-
-        # spawn executor loop task
+        
         self._executor_task = asyncio.create_task(_executor_loop())
 
-        # finally, start ingestion (this call sets up WS consuming etc.)
-        await self._ingestion_use_case.execute()
-        self._logger.info("Realtime ingestion started for %s@%s", symbol, interval)
+        # --- Realtime ingestion for all configured symbols
+        interval = settings.BINANCE_STREAM_INTERVAL
+        symbols = settings.BINANCE_STREAM_SYMBOLS
+        
+        if not symbols:
+            self._logger.error(
+                "No BINANCE_STREAM_SYMBOLS configured. Aborting realtime supervisor start."
+            )
+            return
+
+        self._logger.info(
+            "Initializing realtime ingestion for symbols=%s interval=%s",
+            symbols,
+            interval,
+        )
+        
+        # Backfill (optional) + start WS for each symbol
+        for symbol in symbols:
+            symbol = symbol.strip()
+            if not symbol:
+                continue
+
+            if settings.ENABLE_BACKFILL_ON_START:
+                try:
+                    await backfill_uc.execute_for_symbol(symbol, interval)
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.exception(
+                        "Backfill error for %s@%s: %s", symbol, interval, exc
+                    )
+
+            ws_client = BinanceWebsocketClient(
+                base_ws_url=settings.BINANCE_WS_BASE_URL
+            )
+            ingestion_uc = StartRealtimeIngestionUseCase(
+                symbol=symbol,
+                interval=interval,
+                websocket_client=ws_client,
+                candle_repository=candle_repo,
+                processing_offset_repository=offset_repo,
+                compute_indicators_use_case=compute_indicators_uc,
+                indicator_set_repo=indicator_set_repo,
+                evaluate_use_case=evaluate_uc,
+            )
+
+            self._ws_clients.append(ws_client)
+            self._ingestions.append(ingestion_uc)
+
+        # Start all websocket subscriptions
+        for ingestion_uc in self._ingestions:
+            await ingestion_uc.execute()
+
+        self._logger.info(
+            "Realtime ingestion started for symbols=%s@%s",
+            symbols,
+            interval,
+        )
 
 
     async def stop(self):
         """
-        Gracefully stop resources.
+        Gracefully stop background tasks, websockets, and DB connections.
         """
-        # stop background executor loop
+        # stop executor loop
         if self._executor_task:
             self._executor_task.cancel()
             with contextlib.suppress(Exception):
                 await self._executor_task
 
-        # close WS
-        if self._ws_client:
-            await self._ws_client.close()
+        # close WS clients
+        for ws in self._ws_clients:
+            with contextlib.suppress(Exception):
+                await ws.close()
 
         # close Mongo
         if self._mongo_client:
