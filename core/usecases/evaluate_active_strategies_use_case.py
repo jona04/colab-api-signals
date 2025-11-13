@@ -131,15 +131,16 @@ class EvaluateActiveStrategiesUseCase:
     # === Breakout com confirmação por streak no episódio ===
     @staticmethod
     def _update_breakout_streaks(P: float, Pa: float, Pb: float, eps: float,
-                                 out_above_streak: int, out_below_streak: int) -> Tuple[int, int]:
+                                 out_above_streak: int, out_below_streak: int,
+                                 out_above_streak_total: int, out_below_streak_total: int) -> Tuple[int, int, int, int]:
         above = P > Pb * (1.0 + eps)
         below = P < Pa * (1.0 - eps)
         if above:
-            return out_above_streak + 1, 0
+            return out_above_streak + 1, 0, out_above_streak_total+1, out_below_streak_total
         if below:
-            return 0, out_below_streak + 1
+            return 0, out_below_streak + 1, out_above_streak_total, out_below_streak_total+1
         # voltou para dentro
-        return 0, 0
+        return 0, 0, 0, 0
 
     # ===== execute =====
     async def execute_for_snapshot(self, indicator_set: Dict, snapshot: Dict) -> None:
@@ -196,6 +197,8 @@ class EvaluateActiveStrategiesUseCase:
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
                     "out_above_streak": 0,
                     "out_below_streak": 0,
+                    "out_above_streak_total": 0,
+                    "out_below_streak_total": 0,
                     "dex": params.get("dex"),
                     "alias": params.get("alias"),
                     "token0_address": params.get("token0_address"),
@@ -229,18 +232,22 @@ class EvaluateActiveStrategiesUseCase:
             i_since_open = int(current.get("last_event_bar", 0)) + 1
             out_above_streak = int(current.get("out_above_streak", 0))
             out_below_streak = int(current.get("out_below_streak", 0))
+            out_above_streak_total = int(current.get("out_above_streak_total", 0))
+            out_below_streak_total = int(current.get("out_below_streak_total", 0))
             atr_streaks: Dict = dict(current.get("atr_streak", {}))
             
             trigger: Optional[str] = None
 
             # 2) atualiza streaks de breakout e verifica confirmação
-            out_above_streak, out_below_streak = self._update_breakout_streaks(
-                P, Pa_cur, Pb_cur, eps, out_above_streak, out_below_streak
+            out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total = self._update_breakout_streaks(
+                P, Pa_cur, Pb_cur, eps, out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total
             )
             # persiste os contadores mesmo sem evento
             await self._episode_repo.update_partial(current["_id"], {
                 "out_above_streak": out_above_streak,
                 "out_below_streak": out_below_streak,
+                "out_above_streak_total": out_above_streak_total,
+                "out_below_streak_total": out_below_streak_total,
                 "last_event_bar": i_since_open
             })
 
@@ -261,10 +268,10 @@ class EvaluateActiveStrategiesUseCase:
             
             # flip de direção dentro de high_vol
             if not trigger and pool_type_cur == "high_vol":
-                diff = ema_f - ema_s
-                if mode_on_open_cur == "trend_down" and diff > 10:
+                ema_f_s_percentage = ((ema_f/ema_s)-1)*100
+                if mode_on_open_cur == "trend_down" and ema_f_s_percentage > 0.3:
                     trigger = "high_vol"
-                elif mode_on_open_cur == "trend_up" and diff < -10:
+                elif mode_on_open_cur == "trend_up" and ema_f_s_percentage < -0.3:
                     trigger = "high_vol"
             
             # 4) tiers — apenas se in-range e sem trigger ainda
@@ -368,6 +375,8 @@ class EvaluateActiveStrategiesUseCase:
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
                     "out_above_streak": 0,
                     "out_below_streak": 0,
+                    "out_above_streak_total": 0,
+                    "out_below_streak_total": 0,
                     "dex": params.get("dex"),
                     "alias": params.get("alias"),
                     "token0_address": params.get("token0_address"),

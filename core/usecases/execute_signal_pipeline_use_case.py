@@ -934,19 +934,28 @@ class ExecuteSignalPipelineUseCase:
                 total_fees = gauge_rewards_uncollected_usd + fees_uncollected_usd
 
                 qty_candles = int(last_episode.get("last_event_bar") or 0)
+                out_above_streak_total = int(last_episode.get("out_above_streak_total") or 0)
+                out_below_streak_total = int(last_episode.get("out_below_streak_total") or 0)
 
+                total_candle_out = 0
+                if out_above_streak_total and out_below_streak_total:
+                    total_candle_out = out_above_streak_total + out_below_streak_total
+                
+                qty_candles_out_in_formula = float(qty_candles-total_candle_out)
+                if qty_candles == total_candle_out:
+                    qty_candles_out_in_formula = float(qty_candles-total_candle_out+1)
+                 
                 percentage_uncollected_fee = (
                     (total_fees / total_position_usd)
                     if total_position_usd > 0
                     else None
                 )
 
-
                 APR_daily = None
                 APR_annualy = None
-                if total_position_usd > 0 and total_fees > 0 and qty_candles > 0:
+                if total_position_usd > 0 and total_fees > 0 and qty_candles_out_in_formula > 0:
                     # 1440 / qty_candles ≈ number of bars per day
-                    APR_daily = (1440.0 / float(qty_candles)) * (total_fees / total_position_usd)
+                    APR_daily = (1440.0 / qty_candles_out_in_formula) * (total_fees / total_position_usd)
                     # simple 12*30 ~ 360d approximation
                     APR_annualy = APR_daily * 12.0 * 30.0
 
@@ -960,6 +969,7 @@ class ExecuteSignalPipelineUseCase:
                     "fees_collected_cum": fees_collected_cum,
                     "total_fees": total_fees,
                     "qty_candles": qty_candles,
+                    "total_candle_out": total_candle_out,
                     "percentage_uncollected_fee": percentage_uncollected_fee,
                     "APR_daily": APR_daily * 100 if APR_daily is not None else None,
                     "APR_annualy": APR_annualy * 100 if APR_annualy is not None else None,
