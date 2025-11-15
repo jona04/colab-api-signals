@@ -974,6 +974,7 @@ class ExecuteSignalPipelineUseCase:
                  
                 APR_daily = None
                 APR_annualy = None
+                
                 if total_position_usd > 0 and fees_this_episode > 0 and qty_candles_out_in_formula > 0:
                     # 1440 / qty_candles ≈ number of bars per day
                     APR_daily = (1440.0 / qty_candles_out_in_formula) * (fees_this_episode / total_position_usd)
@@ -1012,6 +1013,16 @@ class ExecuteSignalPipelineUseCase:
                         }
                     },
                 )
+                
+                if episode_id:
+                    await self._episode_repo.update_partial(
+                        episode_id,
+                        {
+                            "metrics": {
+                                "fees_lifetime_baseline_usd": total_fees_lifetime_now,
+                            }
+                        },
+                    )
         except:
             pass
         
