@@ -922,7 +922,7 @@ class ExecuteSignalPipelineUseCase:
                 totals = before.get("totals") or {}
                 vault_idle = before.get("vault_idle") or {}
                 in_position = before.get("in_position") or {}
-                total_position_usd = float(in_position.get("usd") or 0.0)
+                
                 
                 gauge_rewards = before.get("gauge_rewards") or {}
                 rewards_collected_cum = before.get("rewards_collected_cum") or {}
@@ -931,31 +931,52 @@ class ExecuteSignalPipelineUseCase:
 
                 gauge_rewards_uncollected_usd = float(gauge_rewards.get("pending_usd_est") or 0.0)
                 fees_uncollected_usd = float(fees_uncollected.get("usd") or 0.0)
-                total_fees = gauge_rewards_uncollected_usd + fees_uncollected_usd
+                fees_collected_cum_usd = float(fees_collected_cum.get("usd") or 0.0)
+                rewards_collected_cum_usd = float(rewards_collected_cum.get("usdc") or 0.0)
 
+                uncollected_total_usd = gauge_rewards_uncollected_usd + fees_uncollected_usd
+                collected_total_usd = fees_collected_cum_usd + rewards_collected_cum_usd
+
+                total_fees_lifetime_now = uncollected_total_usd + collected_total_usd
+                
+                prev_metrics = (last_episode.get("metrics") or {})
+                prev_baseline_raw = prev_metrics.get("fees_lifetime_baseline_usd", None)
+
+                if prev_baseline_raw is None:
+                    # Primeiro fechamento com essa métrica:
+                    #   - não conta fees deste episódio (evita pegar tudo que veio de antes)
+                    #   - só inicializa o baseline
+                    fees_this_episode = 0.0
+                else:
+                    prev_baseline = float(prev_baseline_raw)
+                    fees_this_episode = max(0.0, total_fees_lifetime_now - prev_baseline)
+                
+                # baseline que será usado como referência para o PRÓXIMO episódio
+                baseline_for_next = total_fees_lifetime_now
+
+                total_position_usd = float(in_position.get("usd") or 0.0)
+
+                percentage_uncollected_fee = (
+                    (fees_this_episode / total_position_usd)
+                    if total_position_usd > 0
+                    else None
+                )
+                    
                 qty_candles = int(last_episode.get("last_event_bar") or 0)
                 out_above_streak_total = int(last_episode.get("out_above_streak_total") or 0)
                 out_below_streak_total = int(last_episode.get("out_below_streak_total") or 0)
 
-                total_candle_out = 0
-                if out_above_streak_total and out_below_streak_total:
-                    total_candle_out = out_above_streak_total + out_below_streak_total
+                total_candle_out = out_above_streak_total + out_below_streak_total
                 
                 qty_candles_out_in_formula = float(qty_candles-total_candle_out)
                 if qty_candles == total_candle_out:
                     qty_candles_out_in_formula = float(qty_candles-total_candle_out+1)
                  
-                percentage_uncollected_fee = (
-                    (total_fees / total_position_usd)
-                    if total_position_usd > 0
-                    else None
-                )
-
                 APR_daily = None
                 APR_annualy = None
-                if total_position_usd > 0 and total_fees > 0 and qty_candles_out_in_formula > 0:
+                if total_position_usd > 0 and fees_this_episode > 0 and qty_candles_out_in_formula > 0:
                     # 1440 / qty_candles ≈ number of bars per day
-                    APR_daily = (1440.0 / qty_candles_out_in_formula) * (total_fees / total_position_usd)
+                    APR_daily = (1440.0 / qty_candles_out_in_formula) * (fees_this_episode / total_position_usd)
                     # simple 12*30 ~ 360d approximation
                     APR_annualy = APR_daily * 12.0 * 30.0
 
@@ -967,9 +988,17 @@ class ExecuteSignalPipelineUseCase:
                     "rewards_collected_cum": rewards_collected_cum,
                     "fees_uncollected": fees_uncollected,
                     "fees_collected_cum": fees_collected_cum,
-                    "total_fees": total_fees,
+                    
+                    "total_fees_lifetime_now": total_fees_lifetime_now,
+                    "uncollected_total_usd": uncollected_total_usd,
+                    "collected_total_usd": collected_total_usd,
+                    
+                    "fees_this_episode": fees_this_episode,
+                    "fees_lifetime_baseline_usd": baseline_for_next,
+                    
                     "qty_candles": qty_candles,
                     "total_candle_out": total_candle_out,
+                    "qty_candles_out_in_formula": qty_candles_out_in_formula,
                     "percentage_uncollected_fee": percentage_uncollected_fee,
                     "APR_daily": APR_daily * 100 if APR_daily is not None else None,
                     "APR_annualy": APR_annualy * 100 if APR_annualy is not None else None,

@@ -143,28 +143,15 @@ class StrategyReconcilerService:
         gauge_flow = bool(desired.get("gauge_flow_enabled"))
         
         if dex and alias:
-            # if gauge_flow:
-            #     # fluxo com gauge
-            #     steps.append({"action": "UNSTAKE", "payload": {"dex": dex, "alias": alias}})
-            #     steps.append({"action": "SWAP_EXACT_IN_REWARD", "payload": {"dex": dex, "alias": alias,
-            #                                                             "lower_price": Pa_des, "upper_price": Pb_des}})  
-            #     if dex == "pancake":
-            #         steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})                  
-            #     steps.append({"action": "WITHDRAW", "payload": {"dex": dex, "alias": alias, "mode": "pool"}})
-            #     steps.append({"action": "SWAP_EXACT_IN", "payload": {"dex": dex, "alias": alias,
-            #                                                          "lower_price": Pa_des, "upper_price": Pb_des}})
-            #     steps.append({"action": "OPEN", "payload": {"dex": dex, "alias": alias,
-            #                                                 "lower_price": Pa_des, "upper_price": Pb_des}})
-            #     steps.append({"action": "STAKE", "payload": {"dex": dex, "alias": alias}})
             if gauge_flow:
                 # fluxo com gauge
                 steps.append({"action": "BATCH_REQUEST", "payload": {"dex": dex, "alias": alias,
                                                                         "lower_price": Pa_des, "upper_price": Pb_des}})  
                 
-                steps.append({"action": "SWAP_EXACT_IN_REWARD", "payload": {"dex": dex, "alias": alias,
-                                                                        "lower_price": Pa_des, "upper_price": Pb_des}})  
-                if dex == "pancake":
-                    steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})                  
+                # steps.append({"action": "SWAP_EXACT_IN_REWARD", "payload": {"dex": dex, "alias": alias,
+                                                                        # "lower_price": Pa_des, "upper_price": Pb_des}})  
+                # if dex == "pancake":
+                #     steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})                  
                 
             else:
                 steps.append({"action": "COLLECT", "payload": {"dex": dex, "alias": alias}})
