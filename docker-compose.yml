@@ -3,8 +3,8 @@ services:
     image: mongo:6.0
     container_name: mongo
     restart: always
-    # ports:
-    #   - "27017:27017"
+    ports:
+      - "27018:27017"
     volumes:
       - ./mongo_data:/data/db
     healthcheck:
@@ -12,13 +12,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    network_mode: "host" 
+    # network_mode: "host" 
 
   api-signals:
     build:
       context: .
       dockerfile: ./Dockerfile
-      network: host
+      # network: host
     container_name: api-signals
     restart: always
     env_file:
@@ -31,7 +31,7 @@ services:
     volumes:
       - .:/app:delegated
     working_dir: /app
-    network_mode: "host"
+    # network_mode: "host"
 
 volumes:
   mongo_data:
