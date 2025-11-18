@@ -149,6 +149,7 @@ class ExecuteSignalPipelineUseCase:
 
         batch_res = None
         
+        st = None
         for step in steps:
             action = step.get("action")
             self._logger.info("Executing step %s for %s/%s", action, dex, alias)
@@ -918,91 +919,230 @@ class ExecuteSignalPipelineUseCase:
         
         try:
             if batch_res and last_episode_id and last_episode:
-                before = batch_res.get("before") or {}
-                totals = before.get("totals") or {}
-                vault_idle = before.get("vault_idle") or {}
-                in_position = before.get("in_position") or {}
+                # Usamos AFTER porque:
+                # - o batch tira snapshot "before"
+                # - executa tx + add_collected_fees_snapshot (atualiza fees_collected_cum no state_repo)
+                # - tira snapshot "after"
+                # Ou seja, o AFTER reflete o lifetime já incluindo o collect feito pelo batch.
+                after = batch_res.get("after") or {}
                 
-                
-                gauge_rewards = before.get("gauge_rewards") or {}
-                rewards_collected_cum = before.get("rewards_collected_cum") or {}
-                fees_uncollected = before.get("fees_uncollected") or {}
-                fees_collected_cum = before.get("fees_collected_cum") or {}
+                snapshot = after
 
-                gauge_rewards_uncollected_usd = float(gauge_rewards.get("pending_usd_est") or 0.0)
-                fees_uncollected_usd = float(fees_uncollected.get("usd") or 0.0)
-                fees_collected_cum_usd = float(fees_collected_cum.get("usd") or 0.0)
-                rewards_collected_cum_usd = float(rewards_collected_cum.get("usdc") or 0.0)
+                totals = snapshot.get("totals") or {}
+                vault_idle = snapshot.get("vault_idle") or {}
+                in_position = snapshot.get("in_position") or {}
 
-                uncollected_total_usd = gauge_rewards_uncollected_usd + fees_uncollected_usd
-                collected_total_usd = fees_collected_cum_usd + rewards_collected_cum_usd
+                gauge_rewards = snapshot.get("gauge_rewards") or {}
+                rewards_collected_cum = snapshot.get("rewards_collected_cum") or {}
+                fees_uncollected = snapshot.get("fees_uncollected") or {}
+                fees_collected_cum = snapshot.get("fees_collected_cum") or {}
+                gauge_reward_balances = snapshot.get("gauge_reward_balances") or {}
 
-                total_fees_lifetime_now = uncollected_total_usd + collected_total_usd
-                
+                # -------------------------
+                # 1) Lifetime atual em unidades de token (baseline "now")
+                # -------------------------
+                pending_cake = float(gauge_rewards.get("pending_amount") or 0.0)
+                pending_cake_usd_est = float(gauge_rewards.get("pending_usd_est") or 0.0)
+                cake_in_vault = float(gauge_reward_balances.get("in_vault") or 0.0)
+
+                rewards_usdc_lifetime = float(rewards_collected_cum.get("usdc") or 0.0)
+
+                fees_uncol_t0 = float(fees_uncollected.get("token0") or 0.0)
+                fees_uncol_t1 = float(fees_uncollected.get("token1") or 0.0)
+                fees_col_t0 = float(fees_collected_cum.get("token0") or 0.0)
+                fees_col_t1 = float(fees_collected_cum.get("token1") or 0.0)
+
+                lifetime_now = {
+                    # CAKE
+                    "gauge_rewards_pending_cake": pending_cake,
+                    "gauge_rewards_pending_usd_est": pending_cake_usd_est,
+                    "gauge_reward_balances_in_vault_cake": cake_in_vault,
+
+                    # Rewards já realizados em USDC
+                    "rewards_collected_usdc": rewards_usdc_lifetime,
+
+                    # Fees LP
+                    "fees_uncollected_token0": fees_uncol_t0,
+                    "fees_uncollected_token1": fees_uncol_t1,
+                    "fees_collected_token0": fees_col_t0,
+                    "fees_collected_token1": fees_col_t1,
+                }
+
+                # agregados
+                lifetime_now["fees_total_token0"] = lifetime_now["fees_uncollected_token0"] + lifetime_now["fees_collected_token0"]
+                lifetime_now["fees_total_token1"] = lifetime_now["fees_uncollected_token1"] + lifetime_now["fees_collected_token1"]
+                lifetime_now["rewards_total_cake"] = (
+                    lifetime_now["gauge_rewards_pending_cake"] +
+                    lifetime_now["gauge_reward_balances_in_vault_cake"]
+                )
+
+                # -------------------------
+                # 2) Baseline anterior (prev) – em tokens
+                # -------------------------
                 prev_metrics = (last_episode.get("metrics") or {})
-                prev_baseline_raw = prev_metrics.get("fees_lifetime_baseline_usd", None)
+                prev_baseline_dict = prev_metrics.get("fees_lifetime_baseline") or {}
 
-                if prev_baseline_raw is None:
-                    # Primeiro fechamento com essa métrica:
-                    #   - não conta fees deste episódio (evita pegar tudo que veio de antes)
-                    #   - só inicializa o baseline
-                    fees_this_episode = 0.0
+                def _prev(key: str) -> float:
+                    return float(prev_baseline_dict.get(key) or 0.0)
+
+                prev_lifetime_fee_t0       = _prev("fees_total_token0")
+                prev_lifetime_fee_t1       = _prev("fees_total_token1")
+                prev_rewards_usdc_lifetime = _prev("rewards_collected_usdc")
+                prev_rewards_cake_lifetime = _prev("rewards_total_cake")
+
+                prev_pending_cake          = _prev("gauge_rewards_pending_cake")
+                prev_pending_cake_usd_est  = _prev("gauge_rewards_pending_usd_est")
+                prev_cake_in_vault         = _prev("gauge_reward_balances_in_vault_cake")
+                prev_uncol_t0              = _prev("fees_uncollected_token0")
+                prev_uncol_t1              = _prev("fees_uncollected_token1")
+                prev_col_t0                = _prev("fees_collected_token0")
+                prev_col_t1                = _prev("fees_collected_token1")
+
+                # -------------------------
+                # 3) Deltas deste episódio em tokens (sempre >= 0)
+                # -------------------------
+                delta_fee_t0_tokens = max(0.0, lifetime_now["fees_total_token0"] - prev_lifetime_fee_t0)
+                delta_fee_t1_tokens = max(0.0, lifetime_now["fees_total_token1"] - prev_lifetime_fee_t1)
+                delta_rewards_usdc  = max(0.0, lifetime_now["rewards_collected_usdc"] - prev_rewards_usdc_lifetime)
+                delta_cake_tokens   = max(0.0, lifetime_now["rewards_total_cake"] - prev_rewards_cake_lifetime)
+
+                # -------------------------
+                # 4) Baseline PARA O PRÓXIMO EPISÓDIO (monotônico em tokens)
+                # -------------------------
+                baseline_for_next = {
+                    "gauge_rewards_pending_cake": max(prev_pending_cake, lifetime_now["gauge_rewards_pending_cake"]),
+                    "gauge_rewards_pending_usd_est": max(prev_pending_cake_usd_est, lifetime_now["gauge_rewards_pending_usd_est"]),
+                    "gauge_reward_balances_in_vault_cake": max(prev_cake_in_vault, lifetime_now["gauge_reward_balances_in_vault_cake"]),
+
+                    "rewards_collected_usdc": max(prev_rewards_usdc_lifetime, lifetime_now["rewards_collected_usdc"]),
+
+                    "fees_uncollected_token0": max(prev_uncol_t0, lifetime_now["fees_uncollected_token0"]),
+                    "fees_uncollected_token1": max(prev_uncol_t1, lifetime_now["fees_uncollected_token1"]),
+                    "fees_collected_token0": max(prev_col_t0, lifetime_now["fees_collected_token0"]),
+                    "fees_collected_token1": max(prev_col_t1, lifetime_now["fees_collected_token1"]),
+
+                    "fees_total_token0": max(prev_lifetime_fee_t0, lifetime_now["fees_total_token0"]),
+                    "fees_total_token1": max(prev_lifetime_fee_t1, lifetime_now["fees_total_token1"]),
+                    "rewards_total_cake": max(prev_rewards_cake_lifetime, lifetime_now["rewards_total_cake"]),
+                }
+
+                total_fees_lifetime_now = {
+                    "fees_total_token0": lifetime_now["fees_total_token0"],
+                    "fees_total_token1": lifetime_now["fees_total_token1"],
+                    "rewards_total_cake": lifetime_now["rewards_total_cake"],
+                    "rewards_collected_usdc": lifetime_now["rewards_collected_usdc"],
+                }
+
+                # -------------------------
+                # 5) Conversão dos deltas -> USD (incluindo CAKE)
+                # -------------------------
+                prices = (snapshot.get("prices") or {})
+                p_t1_t0 = float(prices.get("p_t1_t0") or 0.0)
+                p_t0_t1 = float(prices.get("p_t0_t1") or (0.0 if p_t1_t0 == 0.0 else 1.0 / p_t1_t0))
+
+                holdings_full = (st or {}).get("holdings", {}) or {}
+                syms = (holdings_full.get("symbols") or {})
+                sym0 = (syms.get("token0") or "").upper()
+                sym1 = (syms.get("token1") or "").upper()
+
+                token0_is_usd = self._is_usd(sym0)
+                token1_is_usd = self._is_usd(sym1)
+
+                # Conversão token0/token1 -> USD
+                if token1_is_usd:
+                    # token1 é USD-like → p_t1_t0 = USD por token0
+                    usd_per_t0 = p_t1_t0
+                    usd_per_t1 = 1.0
+                elif token0_is_usd:
+                    # token0 é USD-like → p_t0_t1 = USD por token1
+                    usd_per_t0 = 1.0
+                    usd_per_t1 = p_t0_t1
                 else:
-                    prev_baseline = float(prev_baseline_raw)
-                    fees_this_episode = max(0.0, total_fees_lifetime_now - prev_baseline)
-                
-                # baseline que será usado como referência para o PRÓXIMO episódio
-                baseline_for_next = total_fees_lifetime_now
+                    # nenhum é USD: trata token1 como quote
+                    usd_per_t0 = p_t1_t0
+                    usd_per_t1 = 1.0
 
+                fees_lp_usd_this_episode = (
+                    delta_fee_t0_tokens * usd_per_t0 +
+                    delta_fee_t1_tokens * usd_per_t1
+                )
+
+                # Rewards em USDC (1:1)
+                rewards_usdc_usd_this_episode = delta_rewards_usdc
+
+                # CAKE -> USD: usa pending_usd_est / pending_amount como preço de referência
+                price_cake_usd = 0.0
+                if pending_cake > 0.0 and pending_cake_usd_est > 0.0:
+                    price_cake_usd = pending_cake_usd_est / pending_cake
+
+                rewards_cake_usd_this_episode = delta_cake_tokens * price_cake_usd
+
+                fees_this_episode_usd = (
+                    fees_lp_usd_this_episode +
+                    rewards_usdc_usd_this_episode +
+                    rewards_cake_usd_this_episode
+                )
+
+                # -------------------------
+                # 6) APR (sempre numérico)
+                # -------------------------
                 total_position_usd = float(in_position.get("usd") or 0.0)
 
-                percentage_uncollected_fee = (
-                    (fees_this_episode / total_position_usd)
-                    if total_position_usd > 0
-                    else None
-                )
-                    
                 qty_candles = int(last_episode.get("last_event_bar") or 0)
                 out_above_streak_total = int(last_episode.get("out_above_streak_total") or 0)
                 out_below_streak_total = int(last_episode.get("out_below_streak_total") or 0)
 
                 total_candle_out = out_above_streak_total + out_below_streak_total
-                
-                qty_candles_out_in_formula = float(qty_candles-total_candle_out)
-                if qty_candles == total_candle_out:
-                    qty_candles_out_in_formula = float(qty_candles-total_candle_out+1)
-                 
-                APR_daily = None
-                APR_annualy = None
-                
-                if total_position_usd > 0 and fees_this_episode > 0 and qty_candles_out_in_formula > 0:
-                    # 1440 / qty_candles ≈ number of bars per day
-                    APR_daily = (1440.0 / qty_candles_out_in_formula) * (fees_this_episode / total_position_usd)
-                    # simple 12*30 ~ 360d approximation
-                    APR_annualy = APR_daily * 12.0 * 30.0
 
+                qty_candles_out_in_formula = float(qty_candles - total_candle_out)
+                if qty_candles_out_in_formula <= 0.0:
+                    qty_candles_out_in_formula = 1.0
+
+                APR_daily = 0.0
+                APR_annualy = 0.0
+                percentage_fee_vs_position = 0.0
+
+                if total_position_usd > 0.0:
+                    percentage_fee_vs_position = fees_this_episode_usd / total_position_usd
+                    APR_daily = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
+                    APR_annualy = APR_daily * 365.0
+
+                # -------------------------
+                # 7) Monta métricas completas
+                # -------------------------
                 metrics = {
                     "totals": totals,
                     "vault_idle": vault_idle,
                     "in_position": in_position,
                     "gauge_rewards": gauge_rewards,
                     "rewards_collected_cum": rewards_collected_cum,
+                    "gauge_reward_balances": gauge_reward_balances,
                     "fees_uncollected": fees_uncollected,
                     "fees_collected_cum": fees_collected_cum,
-                    
+
+                    "fees_lifetime_now": lifetime_now,
+                    "fees_lifetime_baseline": baseline_for_next,
+                    "fees_lifetime_prev_baseline": prev_baseline_dict,
                     "total_fees_lifetime_now": total_fees_lifetime_now,
-                    "uncollected_total_usd": uncollected_total_usd,
-                    "collected_total_usd": collected_total_usd,
-                    
-                    "fees_this_episode": fees_this_episode,
-                    "fees_lifetime_baseline_usd": baseline_for_next,
-                    
+
+                    "fees_this_episode_tokens": {
+                        "fee_token0": delta_fee_t0_tokens,
+                        "fee_token1": delta_fee_t1_tokens,
+                        "rewards_cake": delta_cake_tokens,
+                        "rewards_usdc": delta_rewards_usdc,
+                    },
+                    "fees_this_episode_usd": fees_this_episode_usd,
+                    "fees_this_episode_lp_usd": fees_lp_usd_this_episode,
+                    "fees_this_episode_rewards_usdc": rewards_usdc_usd_this_episode,
+                    "fees_this_episode_rewards_cake_usd": rewards_cake_usd_this_episode,
+                    "price_cake_usd_ref": price_cake_usd,
+
                     "qty_candles": qty_candles,
                     "total_candle_out": total_candle_out,
                     "qty_candles_out_in_formula": qty_candles_out_in_formula,
-                    "percentage_uncollected_fee": percentage_uncollected_fee,
-                    "APR_daily": APR_daily * 100 if APR_daily is not None else None,
-                    "APR_annualy": APR_annualy * 100 if APR_annualy is not None else None,
+                    "percentage_fee_vs_position": percentage_fee_vs_position,
+                    "APR_daily": APR_daily * 100.0,
+                    "APR_annualy": APR_annualy * 100.0,
                 }
 
                 await self._episode_repo.update_partial(
@@ -1013,13 +1153,13 @@ class ExecuteSignalPipelineUseCase:
                         }
                     },
                 )
-                
+
                 if episode_id:
                     await self._episode_repo.update_partial(
                         episode_id,
                         {
                             "metrics": {
-                                "fees_lifetime_baseline_usd": total_fees_lifetime_now,
+                                "fees_lifetime_baseline": baseline_for_next,
                             }
                         },
                     )
