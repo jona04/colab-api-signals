@@ -1002,13 +1002,14 @@ class ExecuteSignalPipelineUseCase:
         try:
             if batch_res and last_episode_id and last_episode:
                 after = batch_res.get("after") or {}
+                before = batch_res.get("before") or {}
                 snapshot = after
 
                 totals = snapshot.get("totals") or {}
                 vault_idle = snapshot.get("vault_idle") or {}
                 in_position = snapshot.get("in_position") or {}
 
-                gauge_rewards = snapshot.get("gauge_rewards") or {}
+                gauge_rewards = before.get("gauge_rewards") or {}
                 rewards_collected_cum = snapshot.get("rewards_collected_cum") or {}
                 fees_uncollected = snapshot.get("fees_uncollected") or {}
                 fees_collected_cum = snapshot.get("fees_collected_cum") or {}
