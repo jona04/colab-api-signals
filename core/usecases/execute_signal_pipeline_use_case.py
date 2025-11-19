@@ -997,24 +997,18 @@ class ExecuteSignalPipelineUseCase:
         
         try:
             if batch_res and last_episode_id and last_episode:
-                # Usamos AFTER porque:
-                # - o batch tira snapshot "before"
-                # - executa tx + add_collected_fees_snapshot (atualiza fees_collected_cum no state_repo)
-                # - tira snapshot "after"
-                # Ou seja, o AFTER reflete o lifetime já incluindo o collect feito pelo batch.
                 after = batch_res.get("after") or {}
+                before = batch_res.get("before") or {}
                 
-                snapshot = after
+                totals = after.get("totals") or {}
+                vault_idle = after.get("vault_idle") or {}
+                in_position = after.get("in_position") or {}
 
-                totals = snapshot.get("totals") or {}
-                vault_idle = snapshot.get("vault_idle") or {}
-                in_position = snapshot.get("in_position") or {}
-
-                gauge_rewards = snapshot.get("gauge_rewards") or {}
-                rewards_collected_cum = snapshot.get("rewards_collected_cum") or {}
-                fees_uncollected = snapshot.get("fees_uncollected") or {}
-                fees_collected_cum = snapshot.get("fees_collected_cum") or {}
-                gauge_reward_balances = snapshot.get("gauge_reward_balances") or {}
+                gauge_rewards = before.get("gauge_rewards") or {}
+                rewards_collected_cum = after.get("rewards_collected_cum") or {}
+                fees_uncollected = after.get("fees_uncollected") or {}
+                fees_collected_cum = after.get("fees_collected_cum") or {}
+                gauge_reward_balances = after.get("gauge_reward_balances") or {}
 
                 # -------------------------
                 # 1) Lifetime atual em unidades de token (baseline "now")
@@ -1114,7 +1108,7 @@ class ExecuteSignalPipelineUseCase:
                 # -------------------------
                 # 5) Conversão dos deltas -> USD (incluindo CAKE)
                 # -------------------------
-                prices = (snapshot.get("prices") or {})
+                prices = (after.get("prices") or {})
                 p_t1_t0 = float(prices.get("p_t1_t0") or 0.0)
                 p_t0_t1 = float(prices.get("p_t0_t1") or (0.0 if p_t1_t0 == 0.0 else 1.0 / p_t1_t0))
 
