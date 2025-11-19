@@ -1003,13 +1003,16 @@ class ExecuteSignalPipelineUseCase:
             if batch_res and last_episode_id and last_episode:
                 after = batch_res.get("after") or {}
                 before = batch_res.get("before") or {}
-                snapshot = after
+                snapshot = after  # estado após unstake/exit/swap/open
 
+                # --------- snapshots de estado ---------
                 totals = snapshot.get("totals") or {}
                 vault_idle = snapshot.get("vault_idle") or {}
                 in_position = snapshot.get("in_position") or {}
 
+                # CAKE: sempre usar BEFORE (como você já fazia)
                 gauge_rewards = before.get("gauge_rewards") or {}
+                # rewards e fees: usar AFTER
                 rewards_collected_cum = snapshot.get("rewards_collected_cum") or {}
                 fees_uncollected = snapshot.get("fees_uncollected") or {}
                 fees_collected_cum = snapshot.get("fees_collected_cum") or {}
@@ -1155,7 +1158,7 @@ class ExecuteSignalPipelineUseCase:
                 # Rewards em USDC (1:1)
                 rewards_usdc_usd_this_episode = delta_rewards_usdc
 
-                # CAKE -> USD: usa pending_usd_est / pending_amount como preço de referência
+                # CAKE -> USD: usa pending_usd_est / pending_amount como preço de referência (BEFORE)
                 price_cake_usd = 0.0
                 if pending_cake > 0.0 and pending_cake_usd_est > 0.0:
                     price_cake_usd = pending_cake_usd_est / pending_cake
@@ -1169,7 +1172,7 @@ class ExecuteSignalPipelineUseCase:
                 )
 
                 # -------------------------
-                # 6) APR (sempre numérico)
+                # 6) APR (sempre numérico, APR em fração + em %)
                 # -------------------------
                 total_position_usd = float(in_position.get("usd") or 0.0)
 
@@ -1186,52 +1189,53 @@ class ExecuteSignalPipelineUseCase:
                 APR_annualy = 0.0
                 percentage_fee_vs_position = 0.0
 
-                if total_position_usd > 0.0:
+                if total_position_usd > 0.0 and fees_this_episode_usd > 0.0:
                     percentage_fee_vs_position = fees_this_episode_usd / total_position_usd
                     APR_daily = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
                     APR_annualy = APR_daily * 365.0
+
+                APR_daily_pct = APR_daily * 100.0
+                APR_annualy_pct = APR_annualy * 100.0
 
                 # -------------------------
                 # 7) Metadados de episódio (anterior x atual)
                 # -------------------------
                 prev_open_ts = (
-                    last_episode.get("opened_at")
-                    or last_episode.get("open_ts")
-                    or last_episode.get("start_ts")
+                    last_episode.get("open_time_iso")
+                    or last_episode.get("open_time")
                 )
                 prev_close_ts = (
-                    last_episode.get("closed_at")
-                    or last_episode.get("close_ts")
-                    or last_episode.get("end_ts")
+                    last_episode.get("close_time_iso")
+                    or last_episode.get("close_time")
                 )
 
                 cur_open_ts = (
-                    episode.get("opened_at")
-                    or episode.get("open_ts")
-                    or episode.get("start_ts")
+                    episode.get("open_time_iso")
+                    or episode.get("open_time")
                 )
 
-                # ranges anteriores e atuais, se existirem
-                prev_lower = last_episode.get("lower_price") or last_episode.get("range_lower")
-                prev_upper = last_episode.get("upper_price") or last_episode.get("range_upper")
+                # ranges anteriores e atuais (Pa/Pb são o range real do episódio)
+                prev_lower = last_episode.get("Pa")
+                prev_upper = last_episode.get("Pb")
 
-                cur_lower = episode.get("lower_price") or episode.get("range_lower")
-                cur_upper = episode.get("upper_price") or episode.get("range_upper")
+                cur_lower = episode.get("Pa") or episode.get("lower_price") or episode.get("range_lower")
+                cur_upper = episode.get("Pb") or episode.get("upper_price") or episode.get("range_upper")
 
+                # labels reais do teu modelo (standard/high_vol/tier, up/down, majority)
                 prev_labels = {
                     "pool_type": last_episode.get("pool_type"),
-                    "range_kind": last_episode.get("range_kind") or last_episode.get("band_type"),
-                    "tier_label": last_episode.get("tier_label"),
-                    "volatility_regime": last_episode.get("volatility_regime") or last_episode.get("vol_regime"),
-                    "episode_side": last_episode.get("episode_side"),
+                    "mode_on_open": last_episode.get("mode_on_open"),
+                    "majority_on_open": last_episode.get("majority_on_open"),
+                    "target_major_pct": last_episode.get("target_major_pct"),
+                    "target_minor_pct": last_episode.get("target_minor_pct"),
                 }
 
                 cur_labels = {
                     "pool_type": episode.get("pool_type"),
-                    "range_kind": episode.get("range_kind") or episode.get("band_type"),
-                    "tier_label": episode.get("tier_label"),
-                    "volatility_regime": episode.get("volatility_regime") or episode.get("vol_regime"),
-                    "episode_side": episode.get("episode_side"),
+                    "mode_on_open": episode.get("mode_on_open"),
+                    "majority_on_open": episode.get("majority_on_open"),
+                    "target_major_pct": episode.get("target_major_pct"),
+                    "target_minor_pct": episode.get("target_minor_pct"),
                 }
 
                 episode_meta = {
@@ -1243,12 +1247,12 @@ class ExecuteSignalPipelineUseCase:
                     "prev_close_ts": prev_close_ts,
                     "cur_open_ts": cur_open_ts,
                     "prev_range": {
-                        "lower_price": prev_lower,
-                        "upper_price": prev_upper,
+                        "Pa": prev_lower,
+                        "Pb": prev_upper,
                     },
                     "cur_range": {
-                        "lower_price": cur_lower,
-                        "upper_price": cur_upper,
+                        "Pa": cur_lower,
+                        "Pb": cur_upper,
                     },
                     "prev_labels": prev_labels,
                     "cur_labels": cur_labels,
@@ -1290,17 +1294,17 @@ class ExecuteSignalPipelineUseCase:
                     "total_candle_out": total_candle_out,
                     "qty_candles_out_in_formula": qty_candles_out_in_formula,
                     "percentage_fee_vs_position": percentage_fee_vs_position,
-                    "APR_daily": APR_daily * 100.0,
-                    "APR_annualy": APR_annualy * 100.0,
+                    "APR_daily": APR_daily,
+                    "APR_annualy": APR_annualy,
+                    "APR_daily_pct": APR_daily_pct,
+                    "APR_annualy_pct": APR_annualy_pct,
                 }
 
                 # persiste métricas no episódio anterior (fechado)
                 await self._episode_repo.update_partial(
                     last_episode_id,
                     {
-                        "metrics": {
-                            **metrics,
-                        }
+                        "metrics": metrics
                     },
                 )
 
@@ -1316,7 +1320,7 @@ class ExecuteSignalPipelineUseCase:
                     )
 
                 # -------------------------
-                # 9) Notificação Telegram (completa, sem caracteres estranhos)
+                # 9) Notificação Telegram (sem `, sem *, com info completa)
                 # -------------------------
                 if getattr(self, "_notifier", None) is not None:
                     lines: List[str] = []
@@ -1328,37 +1332,60 @@ class ExecuteSignalPipelineUseCase:
                     lines.append(f"Episódio atual: {episode_id}")
                     lines.append("")
 
+                    # Episódio anterior (pool que foi fechada)
                     lines.append("Episódio anterior (pool fechada):")
                     lines.append(f"  Aberto em:  {prev_open_ts}")
                     lines.append(f"  Fechado em: {prev_close_ts}")
                     lines.append(
-                        f"  Range preços: lower={prev_lower}, upper={prev_upper}"
+                        f"  Range de preços (Pa, Pb): Pa={prev_lower}, Pb={prev_upper}"
                     )
                     lines.append(
-                        "  Labels: "
-                        f"pool_type={prev_labels.get('pool_type')}, "
-                        f"range_kind={prev_labels.get('range_kind')}, "
-                        f"tier={prev_labels.get('tier_label')}, "
-                        f"vol_regime={prev_labels.get('volatility_regime')}, "
-                        f"side={prev_labels.get('episode_side')}"
+                        "  Configuração de pool:"
+                    )
+                    lines.append(
+                        f"    Tipo de pool: {prev_labels.get('pool_type')}"
+                    )
+                    lines.append(
+                        f"    Direção (up/down): {prev_labels.get('mode_on_open')}"
+                    )
+                    lines.append(
+                        f"    Lado majoritário (token1=USD, token2=risco): {prev_labels.get('majority_on_open')}"
+                    )
+                    lines.append(
+                        f"    Target major %: {prev_labels.get('target_major_pct')}"
+                    )
+                    lines.append(
+                        f"    Target minor %: {prev_labels.get('target_minor_pct')}"
                     )
                     lines.append("")
 
+                    # Novo episódio (pool aberta)
                     lines.append("Novo episódio (pool atual):")
                     lines.append(f"  Aberto em: {cur_open_ts}")
                     lines.append(
-                        f"  Range preços: lower={cur_lower}, upper={cur_upper}"
+                        f"  Range de preços (Pa, Pb): Pa={cur_lower}, Pb={cur_upper}"
                     )
                     lines.append(
-                        "  Labels: "
-                        f"pool_type={cur_labels.get('pool_type')}, "
-                        f"range_kind={cur_labels.get('range_kind')}, "
-                        f"tier={cur_labels.get('tier_label')}, "
-                        f"vol_regime={cur_labels.get('volatility_regime')}, "
-                        f"side={cur_labels.get('episode_side')}"
+                        "  Configuração de pool:"
+                    )
+                    lines.append(
+                        f"    Tipo de pool: {cur_labels.get('pool_type')}"
+                    )
+                    lines.append(
+                        f"    Direção (up/down): {cur_labels.get('mode_on_open')}"
+                    )
+                    lines.append(
+                        f"    Lado majoritário (token1=USD, token2=risco): {cur_labels.get('majority_on_open')}"
+                    )
+                    lines.append(
+                        f"    Target major %: {cur_labels.get('target_major_pct')}"
+                    )
+                    lines.append(
+                        f"    Target minor %: {cur_labels.get('target_minor_pct')}"
                     )
                     lines.append("")
 
+                    # Métricas da pool anterior
                     lines.append("Métricas de fechamento da pool anterior:")
                     lines.append(
                         f"  Fees LP (token0): {delta_fee_t0_tokens:.8f} "
@@ -1369,29 +1396,30 @@ class ExecuteSignalPipelineUseCase:
                         f"(lifetime agora: {lifetime_now['fees_total_token1']:.8f})"
                     )
                     lines.append(
-                        f"  Rewards em USDC (ep): {delta_rewards_usdc:.8f} "
+                        f"  Rewards em USDC neste episódio: {delta_rewards_usdc:.8f} "
                         f"(lifetime agora: {lifetime_now['rewards_collected_usdc']:.8f})"
                     )
                     lines.append(
-                        f"  Rewards em CAKE (ep, tokens): {delta_cake_tokens:.8f}"
+                        f"  Rewards em CAKE neste episódio (tokens): {delta_cake_tokens:.8f}"
                     )
                     lines.append(
                         f"  Fees deste episódio em USD (LP + rewards): {fees_this_episode_usd:.6f}"
                     )
                     lines.append(
-                        f"  APR diário aproximado: {APR_daily * 100.0:.4f}%"
+                        f"  APR diário aproximado: {APR_daily_pct:.4f}%"
                     )
                     lines.append(
-                        f"  APR anualizado aproximado: {APR_annualy * 100.0:.4f}%"
+                        f"  APR anualizado aproximado: {APR_annualy_pct:.4f}%"
                     )
                     lines.append("")
 
+                    # Painel APR / candles
                     lines.append("Painel APR (inputs):")
                     lines.append(f"  Total posição USD no fechamento: {total_position_usd:.6f}")
-                    lines.append(f"  Qty candles total: {qty_candles}")
-                    lines.append(f"  Candles fora da pool: {total_candle_out}")
+                    lines.append(f"  Qty candles total do episódio anterior: {qty_candles}")
+                    lines.append(f"  Candles fora da pool (acima+abaixo): {total_candle_out}")
                     lines.append(
-                        f"  Candles considerados na fórmula: {qty_candles_out_in_formula:.2f}"
+                        f"  Candles considerados na fórmula (in-range): {qty_candles_out_in_formula:.2f}"
                     )
                     lines.append(
                         f"  Percentual fees / posição neste episódio: "
@@ -1412,12 +1440,10 @@ class ExecuteSignalPipelineUseCase:
                     lines.append(metrics_json)
 
                     text = "\n".join(lines)
-                    if self._notifier:
-                        await self._notifier.send_message(text)
-        
-        
+                    await self._notifier.send_message(text)
+
         except Exception as exc:
             # nunca quebrar o fluxo por causa de métrica/telegram
             self._logger.warning("Falha ao calcular métricas ou enviar Telegram: %s", exc)
-        
+
         return True

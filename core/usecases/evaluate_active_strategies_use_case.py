@@ -326,6 +326,12 @@ class EvaluateActiveStrategiesUseCase:
                 },
             )
 
+            # garante que o current que vai em last_episode já tenha esses campos
+            current["close_time"] = ts
+            current["close_time_iso"] = now_iso
+            current["close_reason"] = trigger
+            current["close_price"] = P
+            
             trend_now = self._trend_at(ema_f, ema_s)
 
             # helper para abrir com "total width"; aplica preserve quando aplicável
