@@ -1,33 +1,42 @@
 import httpx
-from typing import Optional
-
+import logging
 
 class TelegramNotifier:
-    """
-    Simple async Telegram notifier using Bot API.
-    """
+    def __init__(self, bot_token: str, chat_id: str | int, logger: logging.Logger | None = None):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self._logger = logger or logging.getLogger(self.__class__.__name__)
+        self._client = httpx.AsyncClient(timeout=10.0)
 
-    def __init__(self, bot_token: str, chat_id: str, base_url: str = "https://api.telegram.org"):
-        if not bot_token:
-            raise ValueError("bot_token is required")
-        if not chat_id:
-            raise ValueError("chat_id is required")
+    async def send_message(self, text: str) -> None:
+        if not text:
+            return
 
-        self._bot_token = bot_token
-        self._chat_id = chat_id
-        self._base_url = f"{base_url}/bot{bot_token}"
+        # 1) Trunca mensagem pra não estourar limite do Telegram
+        MAX_LEN = 3800  # 4096 é o hard limit
+        if len(text) > MAX_LEN:
+            text = text[:MAX_LEN - 50] + "\n\n[... mensagem truncada ...]"
 
-    async def send_message(self, text: str, parse_mode: Optional[str] = "Markdown") -> None:
-        """
-        Sends a text message to the configured chat_id.
-        """
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {
-            "chat_id": self._chat_id,
+            "chat_id": self.chat_id,
             "text": text,
+            # MELHOR: sem parse_mode no começo, pra descartar erros de Markdown.
+            # "parse_mode": "MarkdownV2",
         }
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{self._base_url}/sendMessage", json=payload)
-            resp.raise_for_status()
+        resp = await self._client.post(url, json=payload)
+        if resp.status_code >= 400:
+            # Tenta extrair o erro real do Telegram
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": resp.text}
+
+            self._logger.error(
+                "Telegram error %s: %s",
+                resp.status_code,
+                data,
+            )
+            # Não levanta exceção aqui pra não matar a pipeline
+            return
