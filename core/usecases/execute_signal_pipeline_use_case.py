@@ -1202,7 +1202,7 @@ class ExecuteSignalPipelineUseCase:
                 # -------------------------
                 prev_open_ts = (
                     last_episode.get("open_time_iso")
-                    or last_episode.get("open_time")
+                    or last_episode.get("created_at_iso")
                 )
                 prev_close_ts = (
                     last_episode.get("close_time_iso")
@@ -1211,7 +1211,7 @@ class ExecuteSignalPipelineUseCase:
 
                 cur_open_ts = (
                     episode.get("open_time_iso")
-                    or episode.get("open_time")
+                    or episode.get("created_at_iso")
                 )
 
                 # ranges anteriores e atuais (Pa/Pb são o range real do episódio)
@@ -1320,127 +1320,83 @@ class ExecuteSignalPipelineUseCase:
                     )
 
                 # -------------------------
-                # 9) Notificação Telegram (sem `, sem *, com info completa)
+                # 9) Notificação Telegram
                 # -------------------------
                 if getattr(self, "_notifier", None) is not None:
                     lines: List[str] = []
 
-                    lines.append("LP episode fechado e nova posição aberta")
-                    lines.append("")
+                    # HEADER
+                    lines.append("**LP episode fechado e nova posição aberta**")
                     lines.append(f"Dex/Alias: {dex}/{alias}")
                     lines.append(f"Episódio anterior: {last_episode_id}")
                     lines.append(f"Episódio atual: {episode_id}")
                     lines.append("")
 
-                    # Episódio anterior (pool que foi fechada)
-                    lines.append("Episódio anterior (pool fechada):")
-                    lines.append(f"  Aberto em:  {prev_open_ts}")
-                    lines.append(f"  Fechado em: {prev_close_ts}")
-                    lines.append(
-                        f"  Range de preços (Pa, Pb): Pa={prev_lower}, Pb={prev_upper}"
-                    )
-                    lines.append(
-                        "  Configuração de pool:"
-                    )
-                    lines.append(
-                        f"    Tipo de pool: {prev_labels.get('pool_type')}"
-                    )
-                    lines.append(
-                        f"    Direção (up/down): {prev_labels.get('mode_on_open')}"
-                    )
-                    lines.append(
-                        f"    Lado majoritário (token1=USD, token2=risco): {prev_labels.get('majority_on_open')}"
-                    )
-                    lines.append(
-                        f"    Target major %: {prev_labels.get('target_major_pct')}"
-                    )
-                    lines.append(
-                        f"    Target minor %: {prev_labels.get('target_minor_pct')}"
-                    )
+                    # =========================
+                    # EPISÓDIO ANTERIOR
+                    # =========================
+                    lines.append("**📌 Episódio anterior (pool fechada)**")
+                    lines.append(f"Abertura: {prev_open_ts}")
+                    lines.append(f"Fechamento: {prev_close_ts}")
+                    lines.append(f"Range preços: Pa={prev_lower}, Pb={prev_upper}")
+                    lines.append("**Configuração da pool:**")
+                    lines.append(f"• Tipo de pool: {prev_labels.get('pool_type')}")
+                    lines.append(f"• Direção (tendência): {prev_labels.get('mode_on_open')}")
                     lines.append("")
 
-                    # Novo episódio (pool aberta)
-                    lines.append("Novo episódio (pool atual):")
-                    lines.append(f"  Aberto em: {cur_open_ts}")
-                    lines.append(
-                        f"  Range de preços (Pa, Pb): Pa={cur_lower}, Pb={cur_upper}"
-                    )
-                    lines.append(
-                        "  Configuração de pool:"
-                    )
-                    lines.append(
-                        f"    Tipo de pool: {cur_labels.get('pool_type')}"
-                    )
-                    lines.append(
-                        f"    Direção (up/down): {cur_labels.get('mode_on_open')}"
-                    )
-                    lines.append(
-                        f"    Lado majoritário (token1=USD, token2=risco): {cur_labels.get('majority_on_open')}"
-                    )
-                    lines.append(
-                        f"    Target major %: {cur_labels.get('target_major_pct')}"
-                    )
-                    lines.append(
-                        f"    Target minor %: {cur_labels.get('target_minor_pct')}"
-                    )
+                    # =========================
+                    # NOVO EPISÓDIO
+                    # =========================
+                    lines.append("**📌 Novo episódio (pool aberta)**")
+                    lines.append(f"Abertura: {cur_open_ts}")
+                    lines.append(f"Range preços: Pa={cur_lower}, Pb={cur_upper}")
+                    lines.append("**Configuração da pool:**")
+                    lines.append(f"• Tipo de pool: {cur_labels.get('pool_type')}")
+                    lines.append(f"• Direção (tendência): {cur_labels.get('mode_on_open')}")
                     lines.append("")
 
-                    # Métricas da pool anterior
-                    lines.append("Métricas de fechamento da pool anterior:")
-                    lines.append(
-                        f"  Fees LP (token0): {delta_fee_t0_tokens:.8f} "
-                        f"(lifetime agora: {lifetime_now['fees_total_token0']:.8f})"
-                    )
-                    lines.append(
-                        f"  Fees LP (token1): {delta_fee_t1_tokens:.8f} "
-                        f"(lifetime agora: {lifetime_now['fees_total_token1']:.8f})"
-                    )
-                    lines.append(
-                        f"  Rewards em USDC neste episódio: {delta_rewards_usdc:.8f} "
-                        f"(lifetime agora: {lifetime_now['rewards_collected_usdc']:.8f})"
-                    )
-                    lines.append(
-                        f"  Rewards em CAKE neste episódio (tokens): {delta_cake_tokens:.8f}"
-                    )
-                    lines.append(
-                        f"  Fees deste episódio em USD (LP + rewards): {fees_this_episode_usd:.6f}"
-                    )
-                    lines.append(
-                        f"  APR diário aproximado: {APR_daily_pct:.4f}%"
-                    )
-                    lines.append(
-                        f"  APR anualizado aproximado: {APR_annualy_pct:.4f}%"
-                    )
+                    # =========================
+                    # MÉTRICAS DA POOL ANTERIOR
+                    # =========================
+                    lines.append("**📈 Métricas – Episódio encerrado**")
+                    lines.append(f"• Fees LP token0: {delta_fee_t0_tokens:.8f}  (lifetime: {lifetime_now['fees_total_token0']:.8f})")
+                    lines.append(f"• Fees LP token1: {delta_fee_t1_tokens:.8f}  (lifetime: {lifetime_now['fees_total_token1']:.8f})")
+                    lines.append(f"• Rewards em USDC: {delta_rewards_usdc:.8f}  (lifetime: {lifetime_now['rewards_collected_usdc']:.8f})")
+                    lines.append(f"• Rewards em CAKE (tokens): {delta_cake_tokens:.8f}")
+                    lines.append(f"• Total fees do episódio (USD): {fees_this_episode_usd:.6f}")
+                    lines.append(f"• APR diário aproximado: {APR_daily_pct:.4f}%")
+                    lines.append(f"• APR anualizado aproximado: {APR_annualy_pct:.4f}%")
                     lines.append("")
 
-                    # Painel APR / candles
-                    lines.append("Painel APR (inputs):")
-                    lines.append(f"  Total posição USD no fechamento: {total_position_usd:.6f}")
-                    lines.append(f"  Qty candles total do episódio anterior: {qty_candles}")
-                    lines.append(f"  Candles fora da pool (acima+abaixo): {total_candle_out}")
-                    lines.append(
-                        f"  Candles considerados na fórmula (in-range): {qty_candles_out_in_formula:.2f}"
-                    )
-                    lines.append(
-                        f"  Percentual fees / posição neste episódio: "
-                        f"{percentage_fee_vs_position * 100.0:.4f}%"
-                    )
+                    # =========================
+                    # PAINEL APR / CANDLES
+                    # =========================
+                    lines.append("**🧮 Painel APR (inputs)**")
+                    lines.append(f"• Posição USD no fechamento: {total_position_usd:.6f}")
+                    lines.append(f"• Nº total de candles: {qty_candles}")
+                    lines.append(f"• Candles fora da pool: {total_candle_out}")
+                    lines.append(f"• Candles válidos p/ APR: {qty_candles_out_in_formula:.2f}")
+                    lines.append(f"• Percentual fees/posição: {(percentage_fee_vs_position * 100):.4f}%")
                     lines.append("")
 
-                    # preview do JSON de métricas
-                    try:
-                        metrics_json = json.dumps(metrics, default=str, ensure_ascii=False)
-                    except Exception:
-                        metrics_json = "erro ao serializar métricas para JSON"
+                    # =========================
+                    # SNAPSHOT DE MÉTRICAS (PARCIAL)
+                    # =========================
+                    # try:
+                    #     metrics_json = json.dumps(metrics, default=str, ensure_ascii=False)
+                    # except Exception:
+                    #     metrics_json = "erro ao serializar métricas para JSON"
 
-                    if len(metrics_json) > 1500:
-                        metrics_json = metrics_json[:1500] + " ... (truncado)"
+                    # if len(metrics_json) > 1500:
+                    #     metrics_json = metrics_json[:1500] + " ... (truncado)"
 
-                    lines.append("Snapshot de métricas (JSON parcial):")
-                    lines.append(metrics_json)
+                    # lines.append("**📄 Snapshot parcial das métricas:**")
+                    # lines.append(metrics_json)
 
+                    # envia
                     text = "\n".join(lines)
                     await self._notifier.send_message(text)
+
 
         except Exception as exc:
             # nunca quebrar o fluxo por causa de métrica/telegram
