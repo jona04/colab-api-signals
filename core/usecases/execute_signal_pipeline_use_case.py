@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from math import sqrt
 from typing import Dict, List, Optional, Tuple
@@ -995,23 +996,26 @@ class ExecuteSignalPipelineUseCase:
             },
         )
         
+        # ==========================
+        #  BLOCO DE MÉTRICAS + TELEGRAM
+        # ==========================
         try:
             if batch_res and last_episode_id and last_episode:
                 after = batch_res.get("after") or {}
-                before = batch_res.get("before") or {}
-                
-                totals = after.get("totals") or {}
-                vault_idle = after.get("vault_idle") or {}
-                in_position = after.get("in_position") or {}
+                snapshot = after
 
-                gauge_rewards = before.get("gauge_rewards") or {}
-                rewards_collected_cum = after.get("rewards_collected_cum") or {}
-                fees_uncollected = after.get("fees_uncollected") or {}
-                fees_collected_cum = after.get("fees_collected_cum") or {}
-                gauge_reward_balances = after.get("gauge_reward_balances") or {}
+                totals = snapshot.get("totals") or {}
+                vault_idle = snapshot.get("vault_idle") or {}
+                in_position = snapshot.get("in_position") or {}
+
+                gauge_rewards = snapshot.get("gauge_rewards") or {}
+                rewards_collected_cum = snapshot.get("rewards_collected_cum") or {}
+                fees_uncollected = snapshot.get("fees_uncollected") or {}
+                fees_collected_cum = snapshot.get("fees_collected_cum") or {}
+                gauge_reward_balances = snapshot.get("gauge_reward_balances") or {}
 
                 # -------------------------
-                # 1) Lifetime atual em unidades de token (baseline "now")
+                # 1) Lifetime atual (fechamento da pool anterior) em tokens
                 # -------------------------
                 pending_cake = float(gauge_rewards.get("pending_amount") or 0.0)
                 pending_cake_usd_est = float(gauge_rewards.get("pending_usd_est") or 0.0)
@@ -1041,8 +1045,14 @@ class ExecuteSignalPipelineUseCase:
                 }
 
                 # agregados
-                lifetime_now["fees_total_token0"] = lifetime_now["fees_uncollected_token0"] + lifetime_now["fees_collected_token0"]
-                lifetime_now["fees_total_token1"] = lifetime_now["fees_uncollected_token1"] + lifetime_now["fees_collected_token1"]
+                lifetime_now["fees_total_token0"] = (
+                    lifetime_now["fees_uncollected_token0"] +
+                    lifetime_now["fees_collected_token0"]
+                )
+                lifetime_now["fees_total_token1"] = (
+                    lifetime_now["fees_uncollected_token1"] +
+                    lifetime_now["fees_collected_token1"]
+                )
                 lifetime_now["rewards_total_cake"] = (
                     lifetime_now["gauge_rewards_pending_cake"] +
                     lifetime_now["gauge_reward_balances_in_vault_cake"]
@@ -1071,7 +1081,7 @@ class ExecuteSignalPipelineUseCase:
                 prev_col_t1                = _prev("fees_collected_token1")
 
                 # -------------------------
-                # 3) Deltas deste episódio em tokens (sempre >= 0)
+                # 3) Deltas deste episódio (fechamento da pool anterior) em tokens
                 # -------------------------
                 delta_fee_t0_tokens = max(0.0, lifetime_now["fees_total_token0"] - prev_lifetime_fee_t0)
                 delta_fee_t1_tokens = max(0.0, lifetime_now["fees_total_token1"] - prev_lifetime_fee_t1)
@@ -1108,11 +1118,13 @@ class ExecuteSignalPipelineUseCase:
                 # -------------------------
                 # 5) Conversão dos deltas -> USD (incluindo CAKE)
                 # -------------------------
-                prices = (after.get("prices") or {})
+                prices = (snapshot.get("prices") or {})
                 p_t1_t0 = float(prices.get("p_t1_t0") or 0.0)
                 p_t0_t1 = float(prices.get("p_t0_t1") or (0.0 if p_t1_t0 == 0.0 else 1.0 / p_t1_t0))
 
-                holdings_full = (st or {}).get("holdings", {}) or {}
+                # busca status completo para descobrir quais tokens são USD-like
+                st_for_prices = await self._lp.get_status(dex, alias)
+                holdings_full = (st_for_prices or {}).get("holdings", {}) or {}
                 syms = (holdings_full.get("symbols") or {})
                 sym0 = (syms.get("token0") or "").upper()
                 sym1 = (syms.get("token1") or "").upper()
@@ -1163,7 +1175,6 @@ class ExecuteSignalPipelineUseCase:
                 qty_candles = int(last_episode.get("last_event_bar") or 0)
                 out_above_streak_total = int(last_episode.get("out_above_streak_total") or 0)
                 out_below_streak_total = int(last_episode.get("out_below_streak_total") or 0)
-
                 total_candle_out = out_above_streak_total + out_below_streak_total
 
                 qty_candles_out_in_formula = float(qty_candles - total_candle_out)
@@ -1180,9 +1191,74 @@ class ExecuteSignalPipelineUseCase:
                     APR_annualy = APR_daily * 365.0
 
                 # -------------------------
-                # 7) Monta métricas completas
+                # 7) Metadados de episódio (anterior x atual)
+                # -------------------------
+                prev_open_ts = (
+                    last_episode.get("opened_at")
+                    or last_episode.get("open_ts")
+                    or last_episode.get("start_ts")
+                )
+                prev_close_ts = (
+                    last_episode.get("closed_at")
+                    or last_episode.get("close_ts")
+                    or last_episode.get("end_ts")
+                )
+
+                cur_open_ts = (
+                    episode.get("opened_at")
+                    or episode.get("open_ts")
+                    or episode.get("start_ts")
+                )
+
+                # ranges anteriores e atuais, se existirem
+                prev_lower = last_episode.get("lower_price") or last_episode.get("range_lower")
+                prev_upper = last_episode.get("upper_price") or last_episode.get("range_upper")
+
+                cur_lower = episode.get("lower_price") or episode.get("range_lower")
+                cur_upper = episode.get("upper_price") or episode.get("range_upper")
+
+                prev_labels = {
+                    "pool_type": last_episode.get("pool_type"),
+                    "range_kind": last_episode.get("range_kind") or last_episode.get("band_type"),
+                    "tier_label": last_episode.get("tier_label"),
+                    "volatility_regime": last_episode.get("volatility_regime") or last_episode.get("vol_regime"),
+                    "episode_side": last_episode.get("episode_side"),
+                }
+
+                cur_labels = {
+                    "pool_type": episode.get("pool_type"),
+                    "range_kind": episode.get("range_kind") or episode.get("band_type"),
+                    "tier_label": episode.get("tier_label"),
+                    "volatility_regime": episode.get("volatility_regime") or episode.get("vol_regime"),
+                    "episode_side": episode.get("episode_side"),
+                }
+
+                episode_meta = {
+                    "dex": dex,
+                    "alias": alias,
+                    "episode_id": episode_id,
+                    "last_episode_id": last_episode_id,
+                    "prev_open_ts": prev_open_ts,
+                    "prev_close_ts": prev_close_ts,
+                    "cur_open_ts": cur_open_ts,
+                    "prev_range": {
+                        "lower_price": prev_lower,
+                        "upper_price": prev_upper,
+                    },
+                    "cur_range": {
+                        "lower_price": cur_lower,
+                        "upper_price": cur_upper,
+                    },
+                    "prev_labels": prev_labels,
+                    "cur_labels": cur_labels,
+                }
+
+                # -------------------------
+                # 8) Monta métricas completas
                 # -------------------------
                 metrics = {
+                    "episode_meta": episode_meta,
+
                     "totals": totals,
                     "vault_idle": vault_idle,
                     "in_position": in_position,
@@ -1217,6 +1293,7 @@ class ExecuteSignalPipelineUseCase:
                     "APR_annualy": APR_annualy * 100.0,
                 }
 
+                # persiste métricas no episódio anterior (fechado)
                 await self._episode_repo.update_partial(
                     last_episode_id,
                     {
@@ -1226,6 +1303,7 @@ class ExecuteSignalPipelineUseCase:
                     },
                 )
 
+                # e baseline para o episódio atual
                 if episode_id:
                     await self._episode_repo.update_partial(
                         episode_id,
@@ -1235,73 +1313,110 @@ class ExecuteSignalPipelineUseCase:
                             }
                         },
                     )
-                
-                # --- Após atualizar métricas do episódio anterior, envia notificação Telegram (se configurado) ---
-                if self._notifier:
-                    # tentar recuperar a faixa de abertura (lower/upper) do step BATCH_REQUEST
-                    lower_price = None
-                    upper_price = None
-                    batch_step = next((s for s in (sig.get("steps") or []) if s.get("action") == "BATCH_REQUEST"), None)
-                    if batch_step:
-                        payload = batch_step.get("payload") or {}
-                        lower_price = payload.get("lower_price")
-                        upper_price = payload.get("upper_price")
 
-                    fees_this_episode_usd = metrics.get("fees_this_episode_usd", 0.0)
-                    qty_candles = metrics.get("qty_candles", 0)
-                    total_candle_out = metrics.get("total_candle_out", 0)
-                    
-                    apr_daily_pct = metrics.get("APR_daily", 0.0)
-                    apr_annualy_pct = metrics.get("APR_annualy", 0.0)
-                    fees_episode_usd = metrics.get("fees_this_episode_usd", 0.0)
-                    total_position_usd = float(in_position.get("usd") or 0.0)
+                # -------------------------
+                # 9) Notificação Telegram (completa, sem caracteres estranhos)
+                # -------------------------
+                if getattr(self, "_notifier", None) is not None:
+                    lines: List[str] = []
 
-                    pool_type = episode.get("pool_type", None)
-                    mode_on_open = episode.get("mode_on_open", None)
-                    open_price = episode.get("open_price", None)
-                    symbol = episode.get("symbol", None)
-                     
-                    msg_lines = [
-                        "🚀 *Novo sinal executado*",
-                        f"• DEX: {dex}",
-                        f"• Vault: {alias}",
-                        f"• pool_type: {pool_type}",
-                        f"• mode_on_open: {mode_on_open}",
-                        f"• open_price: {open_price}",
-                        f"• symbol: {symbol}",
-                    ]
+                    lines.append("LP episode fechado e nova posição aberta")
+                    lines.append("")
+                    lines.append(f"Dex/Alias: {dex}/{alias}")
+                    lines.append(f"Episódio anterior: {last_episode_id}")
+                    lines.append(f"Episódio atual: {episode_id}")
+                    lines.append("")
 
-                    if lower_price is not None and upper_price is not None:
-                        msg_lines.append(f"• Faixa aberta: `{lower_price}` → `{upper_price}`")
-
-                    msg_lines.extend(
-                        [
-                            "",
-                            "📊 *Episódio anterior (pool fechada agora)*",
-                            f"• Fees do episódio: `{fees_episode_usd:.4f} USD`",
-                            f"• Posição média (usd): `{total_position_usd:.4f}`",
-                            f"• APR diário: `{apr_daily_pct:.4f}%`",
-                            f"• APR anualizado: `{apr_annualy_pct:.4f}%`",
-                            f"• fees_this_episode_usd: `{fees_this_episode_usd:.4f}%`",
-                            f"• qty_candles: `{qty_candles}%`",
-                            f"• total_candle_out: `{total_candle_out}%`",
-                            
-                            "",
-                            f"ID episódio anterior: `{last_episode_id}`",
-                        ]
+                    lines.append("Episódio anterior (pool fechada):")
+                    lines.append(f"  Aberto em:  {prev_open_ts}")
+                    lines.append(f"  Fechado em: {prev_close_ts}")
+                    lines.append(
+                        f"  Range preços: lower={prev_lower}, upper={prev_upper}"
                     )
+                    lines.append(
+                        "  Labels: "
+                        f"pool_type={prev_labels.get('pool_type')}, "
+                        f"range_kind={prev_labels.get('range_kind')}, "
+                        f"tier={prev_labels.get('tier_label')}, "
+                        f"vol_regime={prev_labels.get('volatility_regime')}, "
+                        f"side={prev_labels.get('episode_side')}"
+                    )
+                    lines.append("")
 
-                    text = "\n".join(msg_lines)
+                    lines.append("Novo episódio (pool atual):")
+                    lines.append(f"  Aberto em: {cur_open_ts}")
+                    lines.append(
+                        f"  Range preços: lower={cur_lower}, upper={cur_upper}"
+                    )
+                    lines.append(
+                        "  Labels: "
+                        f"pool_type={cur_labels.get('pool_type')}, "
+                        f"range_kind={cur_labels.get('range_kind')}, "
+                        f"tier={cur_labels.get('tier_label')}, "
+                        f"vol_regime={cur_labels.get('volatility_regime')}, "
+                        f"side={cur_labels.get('episode_side')}"
+                    )
+                    lines.append("")
 
+                    lines.append("Métricas de fechamento da pool anterior:")
+                    lines.append(
+                        f"  Fees LP (token0): {delta_fee_t0_tokens:.8f} "
+                        f"(lifetime agora: {lifetime_now['fees_total_token0']:.8f})"
+                    )
+                    lines.append(
+                        f"  Fees LP (token1): {delta_fee_t1_tokens:.8f} "
+                        f"(lifetime agora: {lifetime_now['fees_total_token1']:.8f})"
+                    )
+                    lines.append(
+                        f"  Rewards em USDC (ep): {delta_rewards_usdc:.8f} "
+                        f"(lifetime agora: {lifetime_now['rewards_collected_usdc']:.8f})"
+                    )
+                    lines.append(
+                        f"  Rewards em CAKE (ep, tokens): {delta_cake_tokens:.8f}"
+                    )
+                    lines.append(
+                        f"  Fees deste episódio em USD (LP + rewards): {fees_this_episode_usd:.6f}"
+                    )
+                    lines.append(
+                        f"  APR diário aproximado: {APR_daily * 100.0:.4f}%"
+                    )
+                    lines.append(
+                        f"  APR anualizado aproximado: {APR_annualy * 100.0:.4f}%"
+                    )
+                    lines.append("")
+
+                    lines.append("Painel APR (inputs):")
+                    lines.append(f"  Total posição USD no fechamento: {total_position_usd:.6f}")
+                    lines.append(f"  Qty candles total: {qty_candles}")
+                    lines.append(f"  Candles fora da pool: {total_candle_out}")
+                    lines.append(
+                        f"  Candles considerados na fórmula: {qty_candles_out_in_formula:.2f}"
+                    )
+                    lines.append(
+                        f"  Percentual fees / posição neste episódio: "
+                        f"{percentage_fee_vs_position * 100.0:.4f}%"
+                    )
+                    lines.append("")
+
+                    # preview do JSON de métricas
                     try:
+                        metrics_json = json.dumps(metrics, default=str, ensure_ascii=False)
+                    except Exception:
+                        metrics_json = "erro ao serializar métricas para JSON"
+
+                    if len(metrics_json) > 1500:
+                        metrics_json = metrics_json[:1500] + " ... (truncado)"
+
+                    lines.append("Snapshot de métricas (JSON parcial):")
+                    lines.append(metrics_json)
+
+                    text = "\n".join(lines)
+                    if self._notifier:
                         await self._notifier.send_message(text)
-                    except Exception as notify_exc:
-                        self._logger.warning(
-                            "Failed to send Telegram notification for episode %s: %s",
-                            last_episode_id,
-                            notify_exc,
-                        )
-        except:
-            pass
+        
+        
+        except Exception as exc:
+            # nunca quebrar o fluxo por causa de métrica/telegram
+            self._logger.warning("Falha ao calcular métricas ou enviar Telegram: %s", exc)
         
         return True
