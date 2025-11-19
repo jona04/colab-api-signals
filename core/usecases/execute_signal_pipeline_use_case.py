@@ -3,6 +3,7 @@ import logging
 from math import sqrt
 from typing import Dict, List, Optional, Tuple
 
+from adapters.external.notify.telegram_notifier import TelegramNotifier
 from core.repositories.strategy_episode_repository import StrategyEpisodeRepository
 
 from ..repositories.signal_repository import SignalRepository
@@ -33,8 +34,9 @@ class ExecuteSignalPipelineUseCase:
         episode_repo: StrategyEpisodeRepository,
         lp_client: PipelineHttpClient,
         logger: Optional[logging.Logger] = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
         base_backoff_sec: float = 1.0,
+        notifier: Optional[TelegramNotifier] = None,
     ):
         self._signal_repo = signal_repo
         self._episode_repo = episode_repo
@@ -42,8 +44,21 @@ class ExecuteSignalPipelineUseCase:
         self._logger = logger or logging.getLogger(self.__class__.__name__)
         self._max_retries = max_retries
         self._base_backoff = base_backoff_sec
+        self._notifier = notifier
         self.EPS_POS = 1e-12  # usado para clamps de raiz e separação Pa<P<Pb
-        
+    
+    async def _notify_telegram(self, text: str) -> None:
+        """
+        Helper para enviar mensagem Telegram (se configurado).
+        Não deixa exceção do notifier quebrar o fluxo.
+        """
+        if not self._notifier:
+            return
+        try:
+            await self._notifier.send_message(text)
+        except Exception as exc:
+            self._logger.warning("Failed to send Telegram message: %s", exc)
+            
     def _tokens_from_L(self, L, Pa, Pb, P):
         xa, xb, x = sqrt(Pa), sqrt(Pb), sqrt(P)
         if P <= Pa:   # tudo vira token0
@@ -109,8 +124,26 @@ class ExecuteSignalPipelineUseCase:
                 # if not ok, _process_single_signal already marked FAILED
             except Exception as exc:
                 self._logger.exception("Unexpected error processing signal %s: %s", sig, exc)
-                await self._signal_repo.mark_failure(sig, f"UNEXPECTED: {exc}")
+                msg = f"UNEXPECTED: {exc}"
+                await self._signal_repo.mark_failure(sig, msg)
 
+                try:
+                    episode = sig.get("episode") or {}
+                    dex = episode.get("dex") or "?"
+                    alias = episode.get("alias") or "?"
+                    sig_id = sig.get("_id") or "?"
+
+                    msg_lines = [
+                        "🔥 *Erro inesperado ao processar sinal*",
+                        f"• Sinal: `{sig_id}`",
+                        f"• DEX: `{dex}`",
+                        f"• Vault: `{alias}`",
+                        f"• Erro: `{msg}`",
+                    ]
+                    await self._notify_telegram("\n".join(msg_lines))
+                except Exception:
+                    pass
+                
     async def _append_log(
         self,
         episode_id: Optional[str],
@@ -890,21 +923,66 @@ class ExecuteSignalPipelineUseCase:
                         },
                     )
                     
+                    try:
+                        dex_safe = dex or "?"
+                        alias_safe = alias or "?"
+                        msg_lines = [
+                            "⚠️ *Falha ao executar step*",
+                            f"• Step: `{action}`",
+                            f"• DEX: `{dex_safe}`",
+                            f"• Vault: `{alias_safe}`",
+                            f"• Tentativa: `{attempt + 1}/{self._max_retries}`",
+                            f"• Erro: `{last_err}`",
+                        ]
+                        # Marca explicitamente quando for a ÚLTIMA tentativa
+                        if attempt + 1 >= self._max_retries:
+                            msg_lines.append("")
+                            msg_lines.append("🚨 *Última tentativa de retry atingida para este step.*")
+
+                        await self._notify_telegram("\n".join(msg_lines))
+                    except Exception:
+                        # já é tratado dentro do _notify_telegram, então aqui é extra defensivo
+                        pass
+                    
                     # incremental backoff
                     await asyncio.sleep(self._base_backoff * (attempt + 1))
 
             if not success:
                 # hard fail -> mark FAILED and stop this signal
-                await self._signal_repo.mark_failure(sig, last_err or f"{action} failed")
+                fail_msg = last_err or f"{action} failed"
+                await self._signal_repo.mark_failure(sig, fail_msg)
                 
                 await self._append_log(
                     episode_id,
                     {
                         "step": action,
                         "phase": "hard_fail",
-                        "error": last_err or f"{action} failed",
+                        "error": fail_msg,
                     },
                 )
+                
+                try:
+                    dex_safe = dex or "?"
+                    alias_safe = alias or "?"
+                    sig_id = sig.get("_id") or "?"
+                    msg_lines = [
+                        "💥 *HARD FAIL ao processar sinal*",
+                        f"• Sinal: `{sig_id}`",
+                        f"• Step: `{action}`",
+                        f"• DEX: `{dex_safe}`",
+                        f"• Vault: `{alias_safe}`",
+                        f"• Erro final: `{fail_msg}`",
+                        "",
+                        "Todos os retries foram esgotados para este step.",
+                    ]
+                    if episode_id:
+                        msg_lines.append(f"• Episódio atual: `{episode_id}`")
+                    if last_episode_id:
+                        msg_lines.append(f"• Episódio anterior: `{last_episode_id}`")
+
+                    await self._notify_telegram("\n".join(msg_lines))
+                except Exception:
+                    pass
                 
                 return False
 
@@ -1163,6 +1241,72 @@ class ExecuteSignalPipelineUseCase:
                             }
                         },
                     )
+                
+                # --- Após atualizar métricas do episódio anterior, envia notificação Telegram (se configurado) ---
+                if self._notifier:
+                    # tentar recuperar a faixa de abertura (lower/upper) do step BATCH_REQUEST
+                    lower_price = None
+                    upper_price = None
+                    batch_step = next((s for s in (sig.get("steps") or []) if s.get("action") == "BATCH_REQUEST"), None)
+                    if batch_step:
+                        payload = batch_step.get("payload") or {}
+                        lower_price = payload.get("lower_price")
+                        upper_price = payload.get("upper_price")
+
+                    fees_this_episode_usd = metrics.get("fees_this_episode_usd", 0.0)
+                    qty_candles = metrics.get("qty_candles", 0)
+                    total_candle_out = metrics.get("total_candle_out", 0)
+                    
+                    apr_daily_pct = metrics.get("APR_daily", 0.0)
+                    apr_annualy_pct = metrics.get("APR_annualy", 0.0)
+                    fees_episode_usd = metrics.get("fees_this_episode_usd", 0.0)
+                    total_position_usd = float(in_position.get("usd") or 0.0)
+
+                    pool_type = episode.get("pool_type", None)
+                    mode_on_open = episode.get("mode_on_open", None)
+                    open_price = episode.get("open_price", None)
+                    symbol = episode.get("symbol", None)
+                     
+                    msg_lines = [
+                        "🚀 *Novo sinal executado*",
+                        f"• DEX: {dex}",
+                        f"• Vault: {alias}",
+                        f"• pool_type: {pool_type}",
+                        f"• mode_on_open: {mode_on_open}",
+                        f"• open_price: {open_price}",
+                        f"• symbol: {symbol}",
+                    ]
+
+                    if lower_price is not None and upper_price is not None:
+                        msg_lines.append(f"• Faixa aberta: `{lower_price}` → `{upper_price}`")
+
+                    msg_lines.extend(
+                        [
+                            "",
+                            "📊 *Episódio anterior (pool fechada agora)*",
+                            f"• Fees do episódio: `{fees_episode_usd:.4f} USD`",
+                            f"• Posição média (usd): `{total_position_usd:.4f}`",
+                            f"• APR diário: `{apr_daily_pct:.4f}%`",
+                            f"• APR anualizado: `{apr_annualy_pct:.4f}%`",
+                            f"• fees_this_episode_usd: `{fees_this_episode_usd:.4f}%`",
+                            f"• qty_candles: `{qty_candles}%`",
+                            f"• total_candle_out: `{total_candle_out}%`",
+                            
+                            "",
+                            f"ID episódio anterior: `{last_episode_id}`",
+                        ]
+                    )
+
+                    text = "\n".join(msg_lines)
+
+                    try:
+                        await self._notifier.send_message(text)
+                    except Exception as notify_exc:
+                        self._logger.warning(
+                            "Failed to send Telegram notification for episode %s: %s",
+                            last_episode_id,
+                            notify_exc,
+                        )
         except:
             pass
         

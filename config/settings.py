@@ -47,6 +47,9 @@ class Settings:
     )
     BINANCE_STREAM_INTERVAL: str = os.getenv("BINANCE_STREAM_INTERVAL", "1m")
 
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    
     @property
     def BINANCE_STREAM_SYMBOLS(self) -> List[str]:
         return [

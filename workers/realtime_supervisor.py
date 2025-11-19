@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from adapters.external.binance.binance_rest_client import BinanceRestClient
 from adapters.external.database.mongodb_client import get_mongo_client
+from adapters.external.notify.telegram_notifier import TelegramNotifier
 from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
 from config.settings import settings
 from core.usecases.backfill_candles_use_case import BackfillCandlesUseCase
@@ -92,6 +93,13 @@ class RealtimeSupervisor:
         await episode_repo.ensure_indexes()
         await signal_repo.ensure_indexes()
 
+        telegram_notifier = None
+        if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+            telegram_notifier = TelegramNotifier(
+                bot_token=settings.TELEGRAM_BOT_TOKEN,
+                chat_id=settings.TELEGRAM_CHAT_ID,
+            )
+            
         # Binance REST client for backfill
         binance_rest = BinanceRestClient(base_url=settings.BINANCE_REST_BASE_URL)
         backfill_uc = BackfillCandlesUseCase(
@@ -119,6 +127,7 @@ class RealtimeSupervisor:
             signal_repo=signal_repo,
             episode_repo=episode_repo,
             lp_client=pipeline_http,
+            notifier=telegram_notifier
         )
         
         async def _executor_loop():
