@@ -104,9 +104,14 @@ class EvaluateActiveStrategiesUseCase:
                 pct_below_base = float(params.get("skew_high_pct", 0.025))  # curto abaixo
                 pct_above_base = float(params.get("skew_low_pct", 0.075))   # largo acima
                 
-        # regime de vol (flag informativa)
+        # regime de vol (flag informativa, com threshold separado p/ tendência de baixa)
         vol_th = params.get("vol_high_threshold_pct")
-        high_vol = (atr_pct_now is not None and vol_th is not None and atr_pct_now > float(vol_th))
+        vol_th_down = params.get("vol_high_threshold_pct_down")
+
+        if trend == "down" and vol_th_down is not None:
+            high_vol = (atr_pct_now is not None) and (atr_pct_now > float(vol_th_down))
+        else:
+            high_vol = (atr_pct_now is not None) and (vol_th is not None) and (atr_pct_now > float(vol_th))
 
         # total width
         if total_width_override is not None:
@@ -162,6 +167,7 @@ class EvaluateActiveStrategiesUseCase:
             breakout_confirm = int(params.get("breakout_confirm_bars", 1))
             inrange_mode = params.get("inrange_resize_mode", "skew_swap")
             gauge_flow_enabled = bool(params.get("gauge_flow_enabled", False))
+            trend_now = self._trend_at(ema_f, ema_s)
             
             # 1) episódio atual
             strat_id = strat["name"]
@@ -259,9 +265,19 @@ class EvaluateActiveStrategiesUseCase:
             # 3) gate high vol (evita reabrir se já high_vol)
             if not trigger:
                 vol_th = params.get("vol_high_threshold_pct")
+                vol_th_down = params.get("vol_high_threshold_pct_down")
+                
+                # escolhe o threshold de acordo com a tendência
+                chosen_th: Optional[float] = None
+                if trend_now == "down" and vol_th_down is not None:
+                    chosen_th = float(vol_th_down)
+                elif vol_th is not None:
+                    chosen_th = float(vol_th)
+                    
                 if (
-                    atr_pct is not None and vol_th is not None
-                    and atr_pct > float(vol_th)
+                    atr_pct is not None
+                    and chosen_th is not None
+                    and atr_pct > chosen_th
                     and pool_type_cur != "high_vol"
                 ):
                     trigger = "high_vol"
@@ -332,8 +348,6 @@ class EvaluateActiveStrategiesUseCase:
             current["close_reason"] = trigger
             current["close_price"] = P
             
-            trend_now = self._trend_at(ema_f, ema_s)
-
             # helper para abrir com "total width"; aplica preserve quando aplicável
             def _open_with_width(next_pool_type: str, total_width_override: Optional[float]):
                 # decide total width alvo

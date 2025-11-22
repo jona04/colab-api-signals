@@ -91,7 +91,12 @@ class StrategyParamsDTO(BaseModel):
     # global caps/floors
     max_major_side_pct: Optional[float] = Field(None, ge=0.0)
     vol_high_threshold_pct: Optional[float] = Field(0.02, ge=0.0)
-
+    vol_high_threshold_pct_down: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="ATR limite para considerar alta volatilidade em tendência de baixa"
+    )
+    
     # pool caps
     high_vol_max_major_side_pct: float = Field(0.10, ge=0.0)
     standard_max_major_side_pct: float = Field(0.05, ge=0.0)

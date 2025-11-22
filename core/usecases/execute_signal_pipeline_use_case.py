@@ -1228,6 +1228,7 @@ class ExecuteSignalPipelineUseCase:
                     "majority_on_open": last_episode.get("majority_on_open"),
                     "target_major_pct": last_episode.get("target_major_pct"),
                     "target_minor_pct": last_episode.get("target_minor_pct"),
+                    "open_price": (last_episode.get("open_price") or 0.0)
                 }
 
                 cur_labels = {
@@ -1236,6 +1237,7 @@ class ExecuteSignalPipelineUseCase:
                     "majority_on_open": episode.get("majority_on_open"),
                     "target_major_pct": episode.get("target_major_pct"),
                     "target_minor_pct": episode.get("target_minor_pct"),
+                    "open_price": (episode.get("open_price") or 0.0)
                 }
 
                 episode_meta = {
@@ -1326,10 +1328,12 @@ class ExecuteSignalPipelineUseCase:
                     lines: List[str] = []
 
                     # HEADER
+                    lines.append("")
+                    lines.append("")
                     lines.append("**LP episode fechado e nova posição aberta**")
                     lines.append(f"Dex/Alias: {dex}/{alias}")
-                    lines.append(f"Episódio anterior: {last_episode_id}")
-                    lines.append(f"Episódio atual: {episode_id}")
+                    lines.append(f"Open Episódio anterior: {prev_labels.get("open_price")}")
+                    lines.append(f"Open Episódio atual: {cur_labels.get("open_price")}")
                     lines.append("")
 
                     # =========================
