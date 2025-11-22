@@ -1332,8 +1332,8 @@ class ExecuteSignalPipelineUseCase:
                     lines.append("")
                     lines.append("**LP episode fechado e nova posição aberta**")
                     lines.append(f"Dex/Alias: {dex}/{alias}")
-                    lines.append(f"Open Episódio anterior: {prev_labels.get("open_price")}")
-                    lines.append(f"Open Episódio atual: {cur_labels.get("open_price")}")
+                    lines.append(f"Open Episódio anterior: {prev_labels.get('open_price')}")
+                    lines.append(f"Open Episódio atual: {cur_labels.get('open_price')}")
                     lines.append("")
 
                     # =========================
