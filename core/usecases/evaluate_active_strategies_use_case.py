@@ -141,11 +141,11 @@ class EvaluateActiveStrategiesUseCase:
         above = P > Pb * (1.0 + eps)
         below = P < Pa * (1.0 - eps)
         if above:
-            return out_above_streak + 1, 0, out_above_streak_total+1, out_below_streak_total
+            return out_above_streak + 1, 0, out_above_streak_total + 1, out_below_streak_total
         if below:
-            return 0, out_below_streak + 1, out_above_streak_total, out_below_streak_total+1
-        # voltou para dentro
-        return 0, 0, 0, 0
+            return 0, out_below_streak + 1, out_above_streak_total, out_below_streak_total + 1
+        # voltou para dentro: zera só o streak, mantém os totais acumulados
+        return 0, 0, out_above_streak_total, out_below_streak_total
 
     # ===== execute =====
     async def execute_for_snapshot(self, indicator_set: Dict, snapshot: Dict) -> None:
@@ -403,8 +403,8 @@ class EvaluateActiveStrategiesUseCase:
                     "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
                     "out_above_streak": 0,
                     "out_below_streak": 0,
-                    "out_above_streak_total": 0,
-                    "out_below_streak_total": 0,
+                    "out_above_streak_total": out_above_streak_total,
+                    "out_below_streak_total": out_below_streak_total,
                     "dex": params.get("dex"),
                     "alias": params.get("alias"),
                     "token0_address": params.get("token0_address"),
