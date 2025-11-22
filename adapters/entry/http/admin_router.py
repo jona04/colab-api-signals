@@ -79,6 +79,11 @@ async def list_indicator_sets(
 class RangeTierDTO(BaseModel):
     name: str
     atr_pct_threshold: float = Field(..., ge=0.0)
+    atr_pct_threshold_down: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="ATR limite em tendência de baixa (se None, usa atr_pct_threshold padrão)"
+    )
     bars_required: int = Field(..., ge=1)
     max_major_side_pct: float = Field(..., gt=0.0)
     allowed_from: List[str] = Field(default_factory=list)

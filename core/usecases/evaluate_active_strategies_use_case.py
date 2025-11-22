@@ -307,7 +307,15 @@ class EvaluateActiveStrategiesUseCase:
                     if pool_type_cur not in allowed_from:
                         continue
                     
-                    thr = float(tier["atr_pct_threshold"])
+                    thr_up = tier.get("atr_pct_threshold")
+                    thr_down = tier.get("atr_pct_threshold_down")
+                    
+                    # escolhe threshold conforme tendência (igual backtest)
+                    if trend_now == "down" and thr_down is not None:
+                        thr = float(thr_down)
+                    else:
+                        thr = float(thr_up)
+                        
                     bars_req = int(tier["bars_required"])
                     
                     if atr_pct is not None and atr_pct <= thr:
@@ -416,7 +424,14 @@ class EvaluateActiveStrategiesUseCase:
                     if pool_type_cur not in allowed_from:
                         continue
                     
-                    thr = float(tier["atr_pct_threshold"])
+                    thr_up = tier.get("atr_pct_threshold")
+                    thr_down = tier.get("atr_pct_threshold_down")
+                    
+                    if trend_now == "down" and thr_down is not None:
+                        thr = float(thr_down)
+                    else:
+                        thr = float(thr_up)
+                        
                     bars_req = int(tier["bars_required"])
                     # usa ATR do snapshot atual para confirmar
                     if atr_pct is not None and atr_pct <= thr:
@@ -443,7 +458,15 @@ class EvaluateActiveStrategiesUseCase:
                     allowed_from = tier.get("allowed_from", []) or []
                     if pool_type_cur not in allowed_from:
                         continue
-                    thr = float(tier["atr_pct_threshold"])
+                    
+                    thr_up = tier.get("atr_pct_threshold")
+                    thr_down = tier.get("atr_pct_threshold_down")
+                    
+                    if trend_now == "down" and thr_down is not None:
+                        thr = float(thr_down)
+                    else:
+                        thr = float(thr_up)
+                        
                     bars_req = int(tier["bars_required"])
                     if atr_pct is not None and atr_pct <= thr:
                         chosen_tier = tier
