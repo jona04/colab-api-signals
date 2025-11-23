@@ -19,11 +19,23 @@ class PipelineHttpClient:
         self._timeout = timeout_sec
         self._logger = logging.getLogger(self.__class__.__name__)
 
-    async def get_status(self, dex: str, alias: str) -> Optional[Dict[str, Any]]:
+    def _build_headers(self, idempotency_key: Optional[str] = None) -> dict:
+        headers: dict = {}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        return headers
+    
+    async def get_status(
+        self, 
+        dex: str, 
+        alias: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/status"
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.get(url)
+                r = await client.get(url, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("status non-200 %s: %s %s", url, r.status_code, r.text)
@@ -31,16 +43,22 @@ class PipelineHttpClient:
             self._logger.exception("get_status error for %s: %s", url, exc)
         return None
 
-    async def post_collect(self, dex: str, alias: str) -> Optional[Dict[str, Any]]:
+    async def post_collect(
+        self, 
+        dex: str, 
+        alias: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/collect
         body: { "alias": <alias> }
         """
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/collect"
         payload = {"alias": alias}
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("collect non-200 %s: %s %s", url, r.status_code, r.text)
@@ -48,16 +66,23 @@ class PipelineHttpClient:
             self._logger.exception("post_collect error for %s: %s", url, exc)
         return None
 
-    async def post_withdraw(self, dex: str, alias: str, mode: str = "pool") -> Optional[Dict[str, Any]]:
+    async def post_withdraw(
+        self, 
+        dex: str, 
+        alias: str, 
+        mode: str = "pool",
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/withdraw
         body: { "alias": <alias>, "mode": "pool" }
         """
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/withdraw"
         payload = {"alias": alias, "mode": mode}
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("withdraw non-200 %s: %s %s", url, r.status_code, r.text)
@@ -74,7 +99,8 @@ class PipelineHttpClient:
         amount_in: Optional[float] = None,
         amount_in_usd: Optional[float] = None,
         convert_gauge_to_usdc: Optional[bool] = False,
-        pool_override: Optional[str] = None
+        pool_override: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/swap/exact-in
@@ -95,9 +121,10 @@ class PipelineHttpClient:
             "convert_gauge_to_usdc": convert_gauge_to_usdc,
             "pool_override": pool_override
         }
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("swap non-200 %s: %s %s", url, r.status_code, r.text)
@@ -115,6 +142,7 @@ class PipelineHttpClient:
         cap1: Optional[float] = None,
         lower_tick: Optional[int] = None,
         upper_tick: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/rebalance
@@ -137,9 +165,10 @@ class PipelineHttpClient:
             "lower_price": lower_price,
             "upper_price": upper_price,
         }
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("rebalance non-200 %s: %s %s", url, r.status_code, r.text)
@@ -155,6 +184,7 @@ class PipelineHttpClient:
         upper_price: Optional[float] = None,
         lower_tick: Optional[int] = None,
         upper_tick: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/open
@@ -177,10 +207,11 @@ class PipelineHttpClient:
             "lower_price": lower_price,
             "upper_price": upper_price,
         }
-
+        headers = self._build_headers(idempotency_key)
+        
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("open non-200 %s: %s %s", url, r.status_code, r.text)
@@ -188,15 +219,21 @@ class PipelineHttpClient:
             self._logger.exception("post_open error for %s: %s", url, exc)
         return None
     
-    async def post_unstake(self, dex: str, alias: str) -> Optional[Dict[str, Any]]:
+    async def post_unstake(
+        self, 
+        dex: str, 
+        alias: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/unstake
         body: {}
         """
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/unstake"
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json={})
+                r = await client.post(url, json={}, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("unstake non-200 %s: %s %s", url, r.status_code, r.text)
@@ -209,6 +246,7 @@ class PipelineHttpClient:
         dex: str,
         alias: str,
         token_id: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/{dex}/{alias}/stake
@@ -216,9 +254,10 @@ class PipelineHttpClient:
         """
         url = f"{self._base_url}/api/vaults/{dex}/{alias}/stake"
         payload = {}
+        headers = self._build_headers(idempotency_key)
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning("stake non-200 %s: %s %s", url, r.status_code, r.text)
@@ -242,6 +281,7 @@ class PipelineHttpClient:
         upper_tick: Optional[int] = None,
         lower_price: Optional[float] = None,
         upper_price: Optional[float] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         POST /api/vaults/pancake/{alias}/batch/unstake-exit-swap-open
@@ -287,10 +327,11 @@ class PipelineHttpClient:
             "lower_price": lower_price,
             "upper_price": upper_price,
         }
-
+        headers = self._build_headers(idempotency_key)
+        
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers=headers)
                 if r.status_code == 200:
                     return r.json()
                 self._logger.warning(

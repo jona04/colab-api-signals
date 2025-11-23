@@ -5,7 +5,9 @@ from math import sqrt
 from typing import Dict, List, Optional, Tuple
 
 from adapters.external.notify.telegram_notifier import TelegramNotifier
+from core.domain.entities.signal_entity import SignalEntity
 from core.repositories.strategy_episode_repository import StrategyEpisodeRepository
+from core.services.idempotency_key_service import IdempotencyKeyService
 
 from ..repositories.signal_repository import SignalRepository
 from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
@@ -38,6 +40,8 @@ class ExecuteSignalPipelineUseCase:
         max_retries: int = 5,
         base_backoff_sec: float = 1.0,
         notifier: Optional[TelegramNotifier] = None,
+        idempotency_service: Optional[IdempotencyKeyService] = None,
+        max_parallel: int = 4,
     ):
         self._signal_repo = signal_repo
         self._episode_repo = episode_repo
@@ -46,7 +50,15 @@ class ExecuteSignalPipelineUseCase:
         self._max_retries = max_retries
         self._base_backoff = base_backoff_sec
         self._notifier = notifier
+        self._idempotency = idempotency_service or IdempotencyKeyService()
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks_lock = asyncio.Lock()  # pra criar locks de forma segura
+        self._max_parallel = max_parallel
+        self._semaphore = asyncio.Semaphore(self._max_parallel)
         self.EPS_POS = 1e-12  # usado para clamps de raiz e separação Pa<P<Pb
+    
+    def _build_idempotency_key(self, signal: SignalEntity, action: str) -> str:
+        return self._idempotency.build_for_signal_step(signal, action)
     
     async def _notify_telegram(self, text: str) -> None:
         """
@@ -117,34 +129,75 @@ class ExecuteSignalPipelineUseCase:
         Fetch up to N pending signals and attempt to execute them.
         """
         pending = await self._signal_repo.list_pending(limit=50)
+        if not pending:
+            return
+        
+        tasks = []
         for sig in pending:
-            try:
-                ok = await self._process_single_signal(sig)
-                if ok:
-                    await self._signal_repo.mark_success(sig)
-                # if not ok, _process_single_signal already marked FAILED
-            except Exception as exc:
-                self._logger.exception("Unexpected error processing signal %s: %s", sig, exc)
-                msg = f"UNEXPECTED: {exc}"
-                await self._signal_repo.mark_failure(sig, msg)
+            tasks.append(self._run_single_with_locks(sig))
+        
+        # executa tudo em paralelo, respeitando semaphore global
+        await asyncio.gather(*tasks, return_exceptions=False)
+    
+    async def _run_single_with_locks(self, sig: Dict) -> None:
+        """
+        Envolve _process_single_signal com:
+          - semaphore global (max_parallel)
+          - lock por vault (dex+alias)
+        """
+        episode = sig.get("episode") or {}
+        dex = episode.get("dex")
+        alias = episode.get("alias")
 
+        vault_lock = await self._get_vault_lock(dex, alias)
+
+        async with self._semaphore:
+            async with vault_lock:
                 try:
-                    episode = sig.get("episode") or {}
-                    dex = episode.get("dex") or "?"
-                    alias = episode.get("alias") or "?"
-                    sig_id = sig.get("_id") or "?"
+                    ok = await self._process_single_signal(sig)
+                    if ok:
+                        await self._signal_repo.mark_success(sig)
+                    # if not ok, _process_single_signal already marked FAILED
+                except Exception as exc:
+                    self._logger.exception("Unexpected error processing signal %s: %s", sig, exc)
+                    msg = f"UNEXPECTED: {exc}"
+                    await self._signal_repo.mark_failure(sig, msg)
 
-                    msg_lines = [
-                        "🔥 *Erro inesperado ao processar sinal*",
-                        f"• Sinal: `{sig_id}`",
-                        f"• DEX: `{dex}`",
-                        f"• Vault: `{alias}`",
-                        f"• Erro: `{msg}`",
-                    ]
-                    await self._notify_telegram("\n".join(msg_lines))
-                except Exception:
-                    pass
-                
+                    try:
+                        episode = sig.get("episode") or {}
+                        dex = episode.get("dex") or "?"
+                        alias = episode.get("alias") or "?"
+                        sig_id = sig.get("_id") or "?"
+
+                        msg_lines = [
+                            "🔥 *Erro inesperado ao processar sinal*",
+                            f"• Sinal: `{sig_id}`",
+                            f"• DEX: `{dex}`",
+                            f"• Vault: `{alias}`",
+                            f"• Erro: `{msg}`",
+                        ]
+                        await self._notify_telegram("\n".join(msg_lines))
+                    except Exception:
+                        pass
+    
+    async def _get_vault_lock(self, dex: Optional[str], alias: Optional[str]) -> asyncio.Lock:
+        """
+        Retorna um asyncio.Lock específico pra combinação (dex, alias).
+
+        - Garante que nunca existam duas pipelines concorrentes pro MESMO vault.
+        - Sinais de vaults diferentes rodam em paralelo (ETH vs BTC, etc.).
+        - Se dex/alias vierem None, usamos um placeholder "?" só pra ter chave estável.
+        """
+        key = f"{dex or '?'}:{alias or '?'}"
+
+        # garante criação thread-safe/async-safe do lock
+        async with self._locks_lock:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[key] = lock
+            return lock
+        
     async def _append_log(
         self,
         episode_id: Optional[str],
@@ -187,7 +240,9 @@ class ExecuteSignalPipelineUseCase:
         for step in steps:
             action = step.get("action")
             self._logger.info("Executing step %s for %s/%s", action, dex, alias)
-
+            
+            idem_key = self._build_idempotency_key(sig, action)
+            
             if (not dex or not alias) and action != "NOOP_LEGACY":
                 skip_msg = "Skipping step because no dex/alias is wired for this strategy."
                 self._logger.info("%s %s", action, skip_msg)
@@ -484,6 +539,7 @@ class ExecuteSignalPipelineUseCase:
                             amount_in_usd=None,           # evitar restrição ETH/USDC
                             lower_price=lower_price,
                             upper_price=upper_price,
+                            idempotency_key=idem_key,
                         )
                         await self._append_log(
                             episode_id,
@@ -511,7 +567,7 @@ class ExecuteSignalPipelineUseCase:
                             raise RuntimeError("status_unavailable_before_unstake")
 
                         if bool(st.get("has_gauge")) and (st.get("staked") or st.get("position_location") == "gauge"):
-                            res = await self._lp.post_unstake(dex, alias)
+                            res = await self._lp.post_unstake(dex, alias, idempotency_key=idem_key,)
                             await self._append_log(episode_id, {
                                 "step": action, "phase": "unstake_call",
                                 "attempt": attempt + 1, "request": {"dex": dex, "alias": alias},
@@ -534,7 +590,7 @@ class ExecuteSignalPipelineUseCase:
                         
                         position_location = st.get("position_location", None)
                         if position_location == "pool":
-                            res = await self._lp.post_collect(dex, alias)
+                            res = await self._lp.post_collect(dex, alias, idempotency_key=idem_key,)
                             await self._append_log(
                                 episode_id,
                                 {
@@ -550,14 +606,14 @@ class ExecuteSignalPipelineUseCase:
                         success = True
                             
                     elif action == "WITHDRAW":
-                        st = await self._lp.get_status(dex, alias)
+                        st = await self._lp.get_status(dex, alias, idempotency_key=idem_key)
                         if not st:
                             raise RuntimeError("status_unavailable_before_swap")
                         
                         position_location = st.get("position_location", None)
                         if position_location == "pool":
                             # always withdraw mode "pool" to bring capital back idle
-                            res = await self._lp.post_withdraw(dex, alias, mode="pool")
+                            res = await self._lp.post_withdraw(dex, alias, mode="pool", idempotency_key=idem_key,)
                             await self._append_log(
                                 episode_id,
                                 {
@@ -574,7 +630,7 @@ class ExecuteSignalPipelineUseCase:
 
                     elif action == "SWAP_EXACT_IN_REWARD":
                         # after withdraw, capital is idle in vault.
-                        st = await self._lp.get_status(dex, alias)
+                        st = await self._lp.get_status(dex, alias, idempotency_key=idem_key)
                         if not st:
                             raise RuntimeError("status_unavailable_before_swap")
                         
@@ -623,7 +679,8 @@ class ExecuteSignalPipelineUseCase:
                                 token_out=token_out_addr,
                                 amount_in=reward_in_vault_to_swap,
                                 pool_override="CAKE_USDC" if dex == "pancake" else "AERO_USDC",
-                                convert_gauge_to_usdc=True
+                                convert_gauge_to_usdc=True,
+                                idempotency_key=idem_key,
                             )
                                 
                             await self._append_log(
@@ -661,7 +718,7 @@ class ExecuteSignalPipelineUseCase:
                             
                     elif action == "SWAP_EXACT_IN":
                         # after withdraw, capital is idle in vault.
-                        st = await self._lp.get_status(dex, alias)
+                        st = await self._lp.get_status(dex, alias, idempotency_key=idem_key)
                         if not st:
                             raise RuntimeError("status_unavailable_before_swap")
                         
@@ -794,7 +851,8 @@ class ExecuteSignalPipelineUseCase:
                                     token_out=token_out_addr,
                                     amount_in_usd=req_amount_usd if direction == "WETH->USDC" else None,
                                     amount_in=req_amount_usd if direction == "USDC->WETH" else None,
-                                    pool_override="WETH_USDC" if dex == "pancake" else None
+                                    pool_override="WETH_USDC" if dex == "pancake" else None,
+                                    idempotency_key=idem_key,
                                 )
 
                                 await self._append_log(
@@ -856,6 +914,7 @@ class ExecuteSignalPipelineUseCase:
                             upper_price=upper_price,
                             lower_tick=None,
                             upper_tick=None,
+                            idempotency_key=idem_key,
                         )
 
                         await self._append_log(
@@ -878,14 +937,14 @@ class ExecuteSignalPipelineUseCase:
                     
                     elif action == "STAKE":
                         # estaca somente se existir gauge e a posição estiver no pool (não-gauge)
-                        st = await self._lp.get_status(dex, alias)
+                        st = await self._lp.get_status(dex, alias, idempotency_key=idem_key)
                         if not st:
                             raise RuntimeError("status_unavailable_before_stake")
 
                         if bool(st.get("has_gauge")) and (st.get("position_location") != "gauge"):
                             # token_id é opcional; o provider pode resolver internamente
                             token_id = step.get("payload", {}).get("token_id")
-                            res = await self._lp.post_stake(dex, alias, token_id=token_id)
+                            res = await self._lp.post_stake(dex, alias, token_id=token_id, idempotency_key=idem_key)
                             await self._append_log(episode_id, {
                                 "step": action, "phase": "stake_call",
                                 "attempt": attempt + 1, "request": {"token_id": token_id},

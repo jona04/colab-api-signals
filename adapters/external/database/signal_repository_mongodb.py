@@ -66,9 +66,6 @@ class SignalRepositoryMongoDB(SignalRepository):
             limit=limit,
         )
         docs = await cursor.to_list(length=limit)
-        # remove Mongo _id for cleanliness
-        for d in docs:
-            d.pop("_id", None)
         return docs
 
     async def mark_success(self, signal: Dict) -> None:
