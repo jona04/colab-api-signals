@@ -24,6 +24,8 @@ class SignalType(str, Enum):
     # Open a brand new range / first position.
     OPEN_NEW_RANGE = "OPEN_NEW_RANGE"
 
+    ROTATE_RANGE = "ROTATE_RANGE"
+    
     # Just realign current range to desired Pa/Pb and caps (no swap).
     REBALANCE_TO_RANGE = "REBALANCE_TO_RANGE"
 
