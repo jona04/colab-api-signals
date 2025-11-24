@@ -18,7 +18,7 @@ class MongoEntity(BaseModel):
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         extra="allow",      # se o doc tiver campos a mais, não quebra
-        use_enum_values=False,
+        use_enum_values=True,
     )
 
     @classmethod

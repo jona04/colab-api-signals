@@ -1,5 +1,6 @@
 # apps/api-signals/adapters/external/database/signal_repository_mongodb.py
 
+from enum import Enum
 import time
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -11,6 +12,11 @@ from core.domain.enums.signal_enums import SignalStatus, SignalType
 from core.repositories.signal_repository import SignalRepository
 
 
+def _norm_signal_type(st) -> str:
+    if isinstance(st, Enum):
+        return st.value
+    return str(st)
+    
 class SignalRepositoryMongoDB(SignalRepository):
     """
     Mongo implementation for signal logs (PENDING -> EXECUTED/FAILED).
@@ -79,10 +85,11 @@ class SignalRepositoryMongoDB(SignalRepository):
     async def mark_success(self, signal: SignalEntity) -> None:
         now_ms = int(time.time() * 1000)
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        st = _norm_signal_type(signal.signal_type)
         key = {
             "strategy_id": signal.strategy_id,
             "ts": signal.ts,
-            "signal_type": signal.signal_type.value,
+            "signal_type": st,
         }
         await self._col.update_one(
             key,
@@ -93,10 +100,11 @@ class SignalRepositoryMongoDB(SignalRepository):
     async def mark_failure(self, signal: SignalEntity, error_msg: str) -> None:
         now_ms = int(time.time() * 1000)
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        st = _norm_signal_type(signal.signal_type)
         key = {
             "strategy_id": signal.strategy_id,
             "ts": signal.ts,
-            "signal_type": signal.signal_type.value,
+            "signal_type": st,
         }
         await self._col.update_one(
             key,
