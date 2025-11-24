@@ -36,7 +36,7 @@ class IndicatorCalculationService:
 
     def compute_snapshot_for_last(
         self,
-        candles: List[Dict],
+        candles,
         ema_fast: int,
         ema_slow: int,
         atr_window: int,
@@ -51,6 +51,24 @@ class IndicatorCalculationService:
         :param atr_window: ATR window (bars).
         :return: Snapshot dict or None if not enough data.
         """
+        if not candles:
+            return None
+    
+        if candles and not isinstance(candles[0], dict):
+            rows = []
+            for c in candles:
+                # Pydantic v2
+                if hasattr(c, "model_dump"):
+                    rows.append(c.model_dump(mode="python"))
+                # Pydantic v1 / entidade com to_mongo
+                elif hasattr(c, "to_mongo"):
+                    rows.append(c.to_mongo())
+                else:
+                    # fallback para dataclass/objeto simples
+                    rows.append(vars(c))
+        else:
+            rows = candles
+            
         required = max(ema_slow, atr_window)
         if len(candles) < required:
             return None
