@@ -73,7 +73,7 @@ class IndicatorCalculationService:
         if len(candles) < required:
             return None
 
-        df = pd.DataFrame(candles)
+        df = pd.DataFrame(rows)
         # ensure numeric
         df["close"] = pd.to_numeric(df["close"], errors="coerce").ffill()
         df["high"] = pd.to_numeric(df["high"], errors="coerce")
