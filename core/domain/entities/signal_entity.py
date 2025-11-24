@@ -37,6 +37,5 @@ class SignalEntity(MongoEntity):
     last_error: Optional[str] = None
 
     model_config = ConfigDict(
-        use_enum_values=True,
         extra="ignore",
     )
