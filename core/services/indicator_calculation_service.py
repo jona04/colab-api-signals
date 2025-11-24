@@ -70,7 +70,7 @@ class IndicatorCalculationService:
             rows = candles
             
         required = max(ema_slow, atr_window)
-        if len(candles) < required:
+        if len(rows) < required:
             return None
 
         df = pd.DataFrame(rows)
@@ -86,7 +86,7 @@ class IndicatorCalculationService:
 
         last = df.iloc[-1]
         snapshot = {
-            "symbol": candles[-1]["symbol"],
+            "symbol": rows[-1]["symbol"],
             "ts": int(last["close_time"]),
             # include OHLC for convenience / denormalized read
             "open": float(last["open"]),
