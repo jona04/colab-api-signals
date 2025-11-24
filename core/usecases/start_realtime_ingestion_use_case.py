@@ -1,6 +1,8 @@
 import logging
 from typing import Any, Dict, Optional
 
+from core.domain.entities.candle_entity import CandleEntity
+
 from ..repositories.candle_repository import CandleRepository
 from ..repositories.indicator_set_repository import IndicatorSetRepository
 from ..usecases.evaluate_active_strategies_use_case import EvaluateActiveStrategiesUseCase
@@ -63,25 +65,25 @@ class StartRealtimeIngestionUseCase:
         """
         try:
             k = event["k"]
-            candle_doc = {
-                "symbol": event["s"],
-                "interval": k["i"],  # expected '1m'
-                "open_time": int(k["t"]),
-                "close_time": int(k["T"]),
-                "open": float(k["o"]),
-                "high": float(k["h"]),
-                "low": float(k["l"]),
-                "close": float(k["c"]),
-                "volume": float(k["v"]),
-                "trades": int(k["n"]),
-                "is_closed": True,
-            }
+            candle = CandleEntity(
+                symbol=event["s"],
+                interval=k["i"],
+                open_time=int(k["t"]),
+                close_time=int(k["T"]),
+                open=float(k["o"]),
+                high=float(k["h"]),
+                low=float(k["l"]),
+                close=float(k["c"]),
+                volume=float(k["v"]),
+                trades=int(k["n"]),
+                is_closed=True,
+            )
 
-            await self._candle_repo.upsert_closed_candle(candle_doc)
-            await self._offset_repo.set_last_closed_open_time(self._stream_key, candle_doc["open_time"])
+            await self._candle_repo.upsert_closed_candle(candle)
+            await self._offset_repo.set_last_closed_open_time(self._stream_key, candle.open_time)
             self._logger.debug(
                 "Upserted candle %s %s open_time=%s",
-                candle_doc["symbol"], candle_doc["interval"], candle_doc["open_time"],
+                candle.symbol, candle.interval, candle.open_time,
             )
 
             # Trigger indicators and evaluation for each ACTIVE indicator set of this symbol
@@ -92,14 +94,17 @@ class StartRealtimeIngestionUseCase:
                         snapshot = await self._compute_indicators.execute_for_indicator_set(
                             symbol=self._symbol,
                             interval=self._interval,
-                            ema_fast=int(indset["ema_fast"]),
-                            ema_slow=int(indset["ema_slow"]),
-                            atr_window=int(indset["atr_window"]),
-                            indicator_set_id=indset.get("_id", indset["cfg_hash"]),
-                            cfg_hash=indset["cfg_hash"],
+                            ema_fast=int(indset.ema_fast),
+                            ema_slow=int(indset.ema_slow),
+                            atr_window=int(indset.atr_window),
+                            indicator_set_id=indset.cfg_hash,
+                            cfg_hash=indset.cfg_hash,
                         )
                         if snapshot:
-                            await self._evaluate_uc.execute_for_snapshot(indicator_set=indset, snapshot=snapshot)
+                            await self._evaluate_uc.execute_for_snapshot(
+                                indicator_set=indset.model_dump(mode="python"),
+                                snapshot=snapshot,
+                            )
                 except Exception as exc:
                     self._logger.exception("Failed to compute indicators/evaluate strategies: %s", exc)
         except Exception as exc:

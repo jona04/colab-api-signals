@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
+from core.domain.entities.candle_entity import CandleEntity
+
 
 class CandleRepository(ABC):
     """
@@ -15,7 +17,7 @@ class CandleRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def upsert_closed_candle(self, candle_doc: Dict) -> None:
+    async def upsert_closed_candle(self, candle: CandleEntity) -> None:
         """
         Upsert a closed 1m candle using a unique key (symbol, interval, open_time).
 
@@ -24,7 +26,7 @@ class CandleRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_last_n_closed(self, symbol: str, interval: str, n: int) -> List[Dict]:
+    async def get_last_n_closed(self, symbol: str, interval: str, n: int) -> List[CandleEntity]:
         """
         Return the last N closed candles for a given symbol and interval, sorted ascending by close_time.
 
@@ -36,7 +38,7 @@ class CandleRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_last_closed(self, symbol: str, interval: str) -> Optional[Dict]:
+    async def get_last_closed(self, symbol: str, interval: str) -> Optional[CandleEntity]:
         """
         Return the most recent closed candle for the given symbol and interval.
 

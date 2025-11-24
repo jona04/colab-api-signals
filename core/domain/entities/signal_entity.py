@@ -1,17 +1,22 @@
-# apps/api-signals/core/domain/entities/signal_entity.py
-
-from typing import Any, Dict, Optional
-from pydantic import BaseModel
+# core/domain/entities/signal_entity.py
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict
 from ..enums.signal_enums import SignalStatus, SignalType
+from .base_entity import MongoEntity
+from .strategy_episode_entity import StrategyEpisodeEntity
 
 
-class SignalEntity(BaseModel):
+class SignalStep(BaseModel):
+    action: str
+    payload: Dict[str, Any] = {}
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class SignalEntity(MongoEntity):
     """
     Canonical in-memory representation of a signal document
     saved in the 'signals' collection.
-
-    This mirrors what EvaluateActiveStrategiesUseCase writes
-    and what ExecuteSignalPipelineUseCase will later consume.
     """
 
     strategy_id: str
@@ -24,33 +29,14 @@ class SignalEntity(BaseModel):
     status: SignalStatus = SignalStatus.PENDING
     attempts: int = 0
 
-    # payload is the structured instruction for the executor.
-    # We do NOT enforce a strict schema here because it can vary
-    # slightly depending on signal_type, but in practice we expect:
-    #
-    # {
-    #   "dex": "aerodrome" | "uniswap" | ...
-    #   "alias": "vault1",
-    #   "token0_address": "...",
-    #   "token1_address": "...",
-    #
-    #   "rebalance": {
-    #       "lower_tick": int,
-    #       "upper_tick": int,
-    #       "lower_price": float,
-    #       "upper_price": float,
-    #       "cap0": float,
-    #       "cap1": float
-    #   },
-    #
-    #   "swap": {
-    #       "token_in": str,
-    #       "token_out": str,
-    #       "amount_in": float,
-    #       "amount_in_usd": float
-    #   }
-    # }
-    payload: Dict[str, Any]
+    steps: List[SignalStep]
 
-    # Optional execution result metadata
+    episode: StrategyEpisodeEntity
+    last_episode: Optional[StrategyEpisodeEntity] = None
+
     last_error: Optional[str] = None
+
+    model_config = ConfigDict(
+        use_enum_values=True,
+        extra="ignore",
+    )

@@ -2,6 +2,11 @@ from datetime import datetime, timezone
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from core.domain.entities.signal_entity import SignalEntity, SignalStep
+from core.domain.entities.strategy_entity import StrategyEntity
+from core.domain.entities.strategy_episode_entity import StrategyEpisodeEntity
+from core.domain.enums.signal_enums import SignalStatus, SignalType
+
 from ..services.strategy_reconciler_service import StrategyReconcilerService
 
 from ..repositories.strategy_repository import StrategyRepository
@@ -156,12 +161,14 @@ class EvaluateActiveStrategiesUseCase:
         atr_pct = float(snapshot["atr_pct"])
         ts = int(snapshot["ts"])
 
-        strategies = await self._strategy_repo.get_active_by_indicator_set(indicator_set_id=indicator_set["cfg_hash"])
+        strategies: List[StrategyEntity] = await self._strategy_repo.get_active_by_indicator_set(
+            indicator_set_id=indicator_set["cfg_hash"]
+        )
         if not strategies:
             return
 
         for strat in strategies:
-            params = strat["params"]
+            params = strat.params
             eps = float(params.get("eps", 1e-6))
             cooloff = int(params.get("cooloff_bars", 1))
             breakout_confirm = int(params.get("breakout_confirm_bars", 1))
@@ -170,77 +177,83 @@ class EvaluateActiveStrategiesUseCase:
             trend_now = self._trend_at(ema_f, ema_s)
             
             # 1) episódio atual
-            strat_id = strat["name"]
+            strat_id = strat.name
             current = await self._episode_repo.get_open_by_strategy(strat_id)
             if current is None:
                 # abre primeira banda centrada pela tendência
                 Pa, Pb, mode, majority, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
-                    P, self._trend_at(ema_f, ema_s), params, atr_pct, total_width_override=params.get("standard_max_major_side_pct"), pool_type="standard"
+                    P, self._trend_at(ema_f, ema_s), params, atr_pct,
+                    total_width_override=params.get("standard_max_major_side_pct"),
+                    pool_type="standard",
                 )
-                
+
                 if majority == "token1":
-                    major_pct = pct_below_base*10
-                    minor_pct = pct_above_base*10
-                    
-                else:  # majority == "token2"
-                    major_pct = pct_above_base*10
-                    minor_pct = pct_below_base*10
+                    major_pct = pct_below_base * 10
+                    minor_pct = pct_above_base * 10
+                else:
+                    major_pct = pct_above_base * 10
+                    minor_pct = pct_below_base * 10
                 
-                new_ep = {
-                    "_id": f"ep_{strat_id}_{ts}",
-                    "strategy_id": strat_id,
-                    "symbol": symbol,
-                    "pool_type": "standard",
-                    "mode_on_open": mode,
-                    "majority_on_open": majority,
-                    "target_major_pct": major_pct,  # ex: 0.90 ou 0.75
-                    "target_minor_pct": minor_pct,
-                    "open_time": ts,
-                    "open_time_iso": snapshot.get("created_at_iso", None),
-                    "open_price": P,
-                    "Pa": Pa, "Pb": Pb,
-                    "last_event_bar": 0,
-                    "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
-                    "out_above_streak": 0,
-                    "out_below_streak": 0,
-                    "out_above_streak_total": 0,
-                    "out_below_streak_total": 0,
-                    "dex": params.get("dex"),
-                    "alias": params.get("alias"),
-                    "token0_address": params.get("token0_address"),
-                    "token1_address": params.get("token1_address"),
-                    "gauge_flow_enabled": gauge_flow_enabled
-                }
-                await self._episode_repo.open_new(new_ep)
+                new_ep = StrategyEpisodeEntity(
+                    id=f"ep_{strat_id}_{ts}",
+                    strategy_id=strat_id,
+                    symbol=symbol,
+                    pool_type="standard",
+                    mode_on_open=mode,
+                    majority_on_open=majority,
+                    target_major_pct=major_pct,
+                    target_minor_pct=minor_pct,
+                    open_time=ts,
+                    open_time_iso=snapshot.get("created_at_iso"),
+                    open_price=P,
+                    Pa=Pa,
+                    Pb=Pb,
+                    last_event_bar=0,
+                    atr_streak={tier["name"]: 0 for tier in params.get("tiers", [])},
+                    out_above_streak=0,
+                    out_below_streak=0,
+                    out_above_streak_total=0,
+                    out_below_streak_total=0,
+                    dex=params.get("dex"),
+                    alias=params.get("alias"),
+                    token0_address=params.get("token0_address"),
+                    token1_address=params.get("token1_address"),
+                    gauge_flow_enabled=gauge_flow_enabled,
+                )
+                new_ep = await self._episode_repo.open_new(new_ep)
                 signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
                 if signal_plan:
-                    await self._signal_repo.upsert_signal({
-                        "strategy_id": strat_id,
-                        "indicator_set_id": indicator_set["cfg_hash"],
-                        "cfg_hash": indicator_set["cfg_hash"],
-                        "symbol": symbol,
-                        "ts": ts,
-                        "signal_type": signal_plan["signal_type"],
-                        "steps": signal_plan["steps"],
-                        "episode": signal_plan["episode"], 
-                        "status": "PENDING",
-                        "attempts": 0,
-                    })
+                    signal = SignalEntity(
+                        strategy_id=strat_id,
+                        indicator_set_id=indicator_set["cfg_hash"],
+                        cfg_hash=indicator_set["cfg_hash"],
+                        symbol=symbol,
+                        ts=ts,
+                        signal_type=SignalType(signal_plan["signal_type"]),
+                        status=SignalStatus.PENDING,
+                        attempts=0,
+                        steps=[
+                            SignalStep(**step) for step in signal_plan["steps"]
+                        ],
+                        episode=new_ep,
+                        last_episode=None,
+                    )
+                    await self._signal_repo.upsert_signal(signal)
                 continue
 
             # defaults de campos antigos
-            Pa_cur = float(current.get("Pa"))
-            Pb_cur = float(current.get("Pb"))
-            pool_type_cur = current.get("pool_type", "standard")
-            mode_on_open_cur = current.get("mode_on_open", "")
-            majority_on_open_cur = current.get("majority_on_open", "")
+            Pa_cur = float(current.Pa)
+            Pb_cur = float(current.Pb)
+            pool_type_cur = current.pool_type
+            mode_on_open_cur = current.mode_on_open
+            majority_on_open_cur = current.majority_on_open
             
-            i_since_open = int(current.get("last_event_bar", 0)) + 1
-            out_above_streak = int(current.get("out_above_streak", 0))
-            out_below_streak = int(current.get("out_below_streak", 0))
-            out_above_streak_total = int(current.get("out_above_streak_total", 0))
-            out_below_streak_total = int(current.get("out_below_streak_total", 0))
-            atr_streaks: Dict = dict(current.get("atr_streak", {}))
+            i_since_open = int(current.last_event_bar) + 1
+            out_above_streak = int(current.out_above_streak)
+            out_below_streak = int(current.out_below_streak)
+            out_above_streak_total = int(current.out_above_streak_total)
+            out_below_streak_total = int(current.out_below_streak_total)
+            atr_streaks: Dict = dict(current.atr_streak)
             
             trigger: Optional[str] = None
 
@@ -249,7 +262,7 @@ class EvaluateActiveStrategiesUseCase:
                 P, Pa_cur, Pb_cur, eps, out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total
             )
             # persiste os contadores mesmo sem evento
-            await self._episode_repo.update_partial(current["_id"], {
+            await self._episode_repo.update_partial(current.id, {
                 "out_above_streak": out_above_streak,
                 "out_below_streak": out_below_streak,
                 "out_above_streak_total": out_above_streak_total,
@@ -327,7 +340,7 @@ class EvaluateActiveStrategiesUseCase:
                         chosen_tier = tier
                         break
                     
-                await self._episode_repo.update_partial(current["_id"], {
+                await self._episode_repo.update_partial(current.id, {
                     "atr_streak": atr_streaks,
                 })
 
@@ -341,7 +354,7 @@ class EvaluateActiveStrategiesUseCase:
             # 6) fechar episódio atual
             now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
             await self._episode_repo.close_episode(
-                current["_id"],
+                current.id,
                 {
                     "close_time": ts,
                     "close_time_iso": now_iso,
@@ -351,13 +364,13 @@ class EvaluateActiveStrategiesUseCase:
             )
 
             # garante que o current que vai em last_episode já tenha esses campos
-            current["close_time"] = ts
-            current["close_time_iso"] = now_iso
-            current["close_reason"] = trigger
-            current["close_price"] = P
+            current.close_time = ts
+            current.close_time_iso = now_iso
+            current.close_reason = trigger
+            current.close_price = P
             
             # helper para abrir com "total width"; aplica preserve quando aplicável
-            def _open_with_width(next_pool_type: str, total_width_override: Optional[float]):
+            def _open_with_width(next_pool_type: str, total_width_override: Optional[float]) -> StrategyEpisodeEntity:
                 # decide total width alvo
                 if total_width_override is not None:
                     total_width_pct = float(total_width_override)
@@ -386,34 +399,35 @@ class EvaluateActiveStrategiesUseCase:
                     major_pct = pct_above_base*10
                     minor_pct = pct_below_base*10
                 
-                return {
-                    "_id": f"ep_{strat_id}_{ts}",
-                    "strategy_id": strat_id,
-                    "symbol": symbol,
-                    "pool_type": next_pool_type,
-                    "mode_on_open": mode_now,
-                    "majority_on_open": majority_now,
-                    "target_major_pct": major_pct,  # ex: 0.90 ou 0.75
-                    "target_minor_pct": minor_pct,
-                    "open_time": ts,
-                    "open_time_iso": snapshot.get("created_at_iso", None),
-                    "open_price": P,
-                    "Pa": Pa_new, "Pb": Pb_new,
-                    "last_event_bar": 0,
-                    "atr_streak": {tier["name"]: 0 for tier in params.get("tiers", [])},
-                    "out_above_streak": 0,
-                    "out_below_streak": 0,
-                    "out_above_streak_total": 0,
-                    "out_below_streak_total": 0,
-                    "dex": params.get("dex"),
-                    "alias": params.get("alias"),
-                    "token0_address": params.get("token0_address"),
-                    "token1_address": params.get("token1_address"),
-                    "gauge_flow_enabled": gauge_flow_enabled
-                }
+                return StrategyEpisodeEntity(
+                    id=f"ep_{strat_id}_{ts}",
+                    strategy_id=strat_id,
+                    symbol=symbol,
+                    pool_type=next_pool_type,
+                    mode_on_open=mode_now,
+                    majority_on_open=majority_now,
+                    target_major_pct=major_pct,
+                    target_minor_pct=minor_pct,
+                    open_time=ts,
+                    open_time_iso=snapshot.get("created_at_iso"),
+                    open_price=P,
+                    Pa=Pa_new,
+                    Pb=Pb_new,
+                    last_event_bar=0,
+                    atr_streak={tier["name"]: 0 for tier in params.get("tiers", [])},
+                    out_above_streak=0,
+                    out_below_streak=0,
+                    out_above_streak_total=0,
+                    out_below_streak_total=0,
+                    dex=params.get("dex"),
+                    alias=params.get("alias"),
+                    token0_address=params.get("token0_address"),
+                    token1_address=params.get("token1_address"),
+                    gauge_flow_enabled=gauge_flow_enabled,
+                )
 
             # 7) escolher próxima pool
-            new_ep: Optional[Dict] = None
+            new_ep: Optional[StrategyEpisodeEntity] = None
             tiers_cfg: List[Dict] = list(params.get("tiers", []))
             
             if trigger in ("cross_min", "cross_max"):
@@ -488,16 +502,17 @@ class EvaluateActiveStrategiesUseCase:
             await self._episode_repo.open_new(new_ep)
             signal_plan = await self._reconciler.reconcile(strat_id, new_ep, symbol)
             if signal_plan:
-                await self._signal_repo.upsert_signal({
-                    "strategy_id": strat_id,
-                    "indicator_set_id": indicator_set["cfg_hash"],
-                    "cfg_hash": indicator_set["cfg_hash"],
-                    "symbol": symbol,
-                    "ts": ts,
-                    "signal_type": signal_plan["signal_type"],
-                    "steps": signal_plan["steps"],
-                    "episode": signal_plan["episode"], 
-                    "status": "PENDING",
-                    "attempts": 0,
-                    "last_episode": current
-                })
+                signal = SignalEntity(
+                    strategy_id=strat_id,
+                    indicator_set_id=indicator_set["cfg_hash"],
+                    cfg_hash=indicator_set["cfg_hash"],
+                    symbol=symbol,
+                    ts=ts,
+                    signal_type=SignalType(signal_plan["signal_type"]),
+                    status=SignalStatus.PENDING,
+                    attempts=0,
+                    steps=[SignalStep(**step) for step in signal_plan["steps"]],
+                    episode=new_ep,
+                    last_episode=current,
+                )
+                await self._signal_repo.upsert_signal(signal)

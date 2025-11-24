@@ -10,6 +10,7 @@ class SignalStatus(str, Enum):
     PENDING = "PENDING"     # created by EvaluateActiveStrategiesUseCase
     EXECUTED = "EXECUTED"   # successfully sent/applied to vault
     FAILED = "FAILED"       # tried to execute but hit an error
+    SENT = "SENT"
 
 
 class SignalType(str, Enum):

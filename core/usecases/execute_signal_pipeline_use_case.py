@@ -128,7 +128,7 @@ class ExecuteSignalPipelineUseCase:
         """
         Fetch up to N pending signals and attempt to execute them.
         """
-        pending = await self._signal_repo.list_pending(limit=50)
+        pending: List[SignalEntity] = await self._signal_repo.list_pending(limit=50)
         if not pending:
             return
         
@@ -139,15 +139,15 @@ class ExecuteSignalPipelineUseCase:
         # executa tudo em paralelo, respeitando semaphore global
         await asyncio.gather(*tasks, return_exceptions=False)
     
-    async def _run_single_with_locks(self, sig: Dict) -> None:
+    async def _run_single_with_locks(self, sig: SignalEntity) -> None:
         """
         Envolve _process_single_signal com:
           - semaphore global (max_parallel)
           - lock por vault (dex+alias)
         """
-        episode = sig.get("episode") or {}
-        dex = episode.get("dex")
-        alias = episode.get("alias")
+        episode = sig.episode
+        dex = episode.dex
+        alias = episode.alias
 
         vault_lock = await self._get_vault_lock(dex, alias)
 
@@ -164,10 +164,7 @@ class ExecuteSignalPipelineUseCase:
                     await self._signal_repo.mark_failure(sig, msg)
 
                     try:
-                        episode = sig.get("episode") or {}
-                        dex = episode.get("dex") or "?"
-                        alias = episode.get("alias") or "?"
-                        sig_id = sig.get("_id") or "?"
+                        sig_id = sig.id
 
                         msg_lines = [
                             "🔥 *Erro inesperado ao processar sinal*",
@@ -215,19 +212,19 @@ class ExecuteSignalPipelineUseCase:
             self._logger.warning("Failed to append_execution_log for %s: %s", episode_id, log_exc)
 
 
-    async def _process_single_signal(self, sig: Dict) -> bool:
+    async def _process_single_signal(self, sig: SignalEntity) -> bool:
         """
         Executes a single signal's steps sequentially.
         Returns True on full success, False if FAILED.
         """
-        steps: List[Dict] = sig.get("steps") or []
+        steps = [s.model_dump(mode="python") for s in sig.steps]
         
-        last_episode = sig.get("last_episode") or {}
-        last_episode_id = last_episode.get("_id")
-        
-        episode = sig.get("episode") or {}
-        episode_id = episode.get("_id")
-        
+        last_episode = sig.last_episode.model_dump(mode="python") if sig.last_episode else {}
+        last_episode_id = last_episode.get("id") or last_episode.get("_id")
+
+        episode = sig.episode.model_dump(mode="python")
+        episode_id = episode.get("id") or episode.get("_id")
+
         dex = episode.get("dex")
         alias = episode.get("alias")
         token0_addr = episode.get("token0_address")
@@ -691,8 +688,8 @@ class ExecuteSignalPipelineUseCase:
                                     "attempt": attempt + 1,
                                     "request": {
                                         "token_in": reward_token,
-                                        "token_out": token1_addr,
-                                        "amount_in_usd": reward_in_vault_to_swap,
+                                        "token_out": token_out_addr,
+                                        "amount_in": reward_in_vault_to_swap,
                                     },
                                     "response": res,
                                 },
@@ -806,7 +803,7 @@ class ExecuteSignalPipelineUseCase:
                                     direction = "WETH->USDC"
 
                             # para evitar o valor exato e causar erros de saldo
-                            req_amount_usd = req_amount_usd - 0.01
+                            req_amount_usd = req_amount_usd - 0.00001
                             
                             # log cálculo alvo
                             await self._append_log(
@@ -1024,7 +1021,7 @@ class ExecuteSignalPipelineUseCase:
                 try:
                     dex_safe = dex or "?"
                     alias_safe = alias or "?"
-                    sig_id = sig.get("_id") or "?"
+                    sig_id = sig.id
                     msg_lines = [
                         "💥 *HARD FAIL ao processar sinal*",
                         f"• Sinal: `{sig_id}`",

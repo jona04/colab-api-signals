@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, List
 
+from core.domain.entities.strategy_episode_entity import StrategyEpisodeEntity
+
 
 class StrategyEpisodeRepository(ABC):
     """
@@ -13,12 +15,12 @@ class StrategyEpisodeRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_open_by_strategy(self, strategy_id: str) -> Optional[Dict]:
+    async def get_open_by_strategy(self, strategy_id: str) -> Optional[StrategyEpisodeEntity]:
         """Return the OPEN episode for a strategy or None."""
         raise NotImplementedError
 
     @abstractmethod
-    async def open_new(self, doc: Dict) -> Dict:
+    async def open_new(self, episode: StrategyEpisodeEntity) -> StrategyEpisodeEntity:
         """Insert a new OPEN episode; returns the stored document."""
         raise NotImplementedError
 
@@ -33,7 +35,7 @@ class StrategyEpisodeRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_by_strategy(self, strategy_id: str, limit: int = 50) -> List[Dict]:
+    async def list_by_strategy(self, strategy_id: str, limit: int = 50) -> List[StrategyEpisodeEntity | None]:
         """History: recent episodes for a strategy."""
         raise NotImplementedError
 

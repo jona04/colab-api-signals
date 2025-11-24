@@ -1,6 +1,7 @@
 from typing import Dict, Optional, List
 
 from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
+from core.domain.entities.strategy_episode_entity import StrategyEpisodeEntity
 
 
 class StrategyReconcilerService:
@@ -19,7 +20,7 @@ class StrategyReconcilerService:
     def __init__(self, lp_client: PipelineHttpClient):
         self._lp = lp_client
 
-    async def reconcile(self, strategy_id: str, desired: Dict, symbol: str) -> Optional[Dict]:
+    async def reconcile(self, strategy_id: str, desired: StrategyEpisodeEntity, symbol: str) -> Optional[Dict]:
         """
         Build an execution plan for the given desired episode.
 
@@ -40,13 +41,13 @@ class StrategyReconcilerService:
         Or None if LP is already aligned.
         """
 
-        Pa_des = float(desired["Pa"])
-        Pb_des = float(desired["Pb"])
+        Pa_des = float(desired.Pa)
+        Pb_des = float(desired.Pb)
 
-        dex = desired.get("dex")
-        alias = desired.get("alias")
+        dex = desired.dex
+        alias = desired.alias
 
-        gauge_flow = bool(desired.get("gauge_flow_enabled"))
+        gauge_flow = bool(desired.gauge_flow_enabled)
         
         # pull live vault status so we know if position exists / is aligned
         lp_status = None
@@ -131,7 +132,7 @@ class StrategyReconcilerService:
         Pa_des: float,
         Pb_des: float,
         strategy_id: str,
-        desired: Dict,
+        desired: StrategyEpisodeEntity,
         symbol: str,
         reason: str,
     ) -> Dict:
@@ -140,7 +141,7 @@ class StrategyReconcilerService:
         If dex/alias is missing, we can't actually call vault API, so fall back to NOOP.
         """
         steps: List[Dict] = []
-        gauge_flow = bool(desired.get("gauge_flow_enabled"))
+        gauge_flow = bool(desired.gauge_flow_enabled)
         
         if dex and alias:
             if gauge_flow:

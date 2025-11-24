@@ -6,6 +6,8 @@ from typing import Dict, List
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from core.domain.entities.signal_entity import SignalEntity
+from core.domain.enums.signal_enums import SignalStatus, SignalType
 from core.repositories.signal_repository import SignalRepository
 
 
@@ -30,69 +32,79 @@ class SignalRepositoryMongoDB(SignalRepository):
             name="ix_status_created_at",
         )
 
-    async def upsert_signal(self, doc: Dict) -> None:
+    async def upsert_signal(self, signal: SignalEntity) -> None:
         now_ms = int(time.time() * 1000)
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        
+        doc = signal.to_mongo()
         key = {
-            "strategy_id": doc["strategy_id"],
-            "ts": doc["ts"],
-            "signal_type": doc["signal_type"],
+            "strategy_id": signal.strategy_id,
+            "ts": signal.ts,
+            "signal_type": signal.signal_type.value
+            if isinstance(signal.signal_type, SignalType)
+            else signal.signal_type,
         }
         
+        # não sobreescrever status/attempts em update normal
         set_doc = {
             k: v
             for (k, v) in doc.items()
             if k not in ("status", "attempts", "created_at", "created_at_iso")
         }
-        
+
         update = {
             "$set": {
                 **set_doc,
                 "updated_at": now_ms,
+                "updated_at_iso": now_iso,
             },
             "$setOnInsert": {
                 "created_at": now_ms,
                 "created_at_iso": now_iso,
-                "status": "PENDING",
+                "status": SignalStatus.PENDING.value,
                 "attempts": 0,
             },
         }
         await self._col.update_one(key, update, upsert=True)
 
-    async def list_pending(self, limit: int = 50) -> List[Dict]:
+    async def list_pending(self, limit: int = 50) -> List[SignalEntity]:
         cursor = self._col.find(
-            {"status": "PENDING"},
+            {"status": SignalStatus.PENDING.value},
             sort=[("created_at", 1)],
             limit=limit,
         )
         docs = await cursor.to_list(length=limit)
-        return docs
+        return [SignalEntity.from_mongo(d) for d in docs if d]
 
-    async def mark_success(self, signal: Dict) -> None:
+    async def mark_success(self, signal: SignalEntity) -> None:
         now_ms = int(time.time() * 1000)
+        now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
         key = {
-            "strategy_id": signal["strategy_id"],
-            "ts": signal["ts"],
-            "signal_type": signal["signal_type"],
+            "strategy_id": signal.strategy_id,
+            "ts": signal.ts,
+            "signal_type": signal.signal_type.value,
         }
         await self._col.update_one(
             key,
-            {"$set": {"status": "SENT", "updated_at": now_ms}},
+            {"$set": {"status": SignalStatus.SENT.value, "updated_at": now_ms, "updated_at_iso": now_iso}},
         )
 
-    async def mark_failure(self, signal: Dict, error_msg: str) -> None:
+
+    async def mark_failure(self, signal: SignalEntity, error_msg: str) -> None:
         now_ms = int(time.time() * 1000)
+        now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
         key = {
-            "strategy_id": signal["strategy_id"],
-            "ts": signal["ts"],
-            "signal_type": signal["signal_type"],
+            "strategy_id": signal.strategy_id,
+            "ts": signal.ts,
+            "signal_type": signal.signal_type.value,
         }
         await self._col.update_one(
             key,
             {
                 "$set": {
-                    "status": "FAILED",
+                    "status": SignalStatus.FAILED.value,
                     "updated_at": now_ms,
+                    "updated_at_iso": now_iso,
                     "last_error": error_msg,
                 },
                 "$inc": {"attempts": 1},
