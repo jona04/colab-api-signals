@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from adapters.external.binance.binance_rest_client import BinanceRestClient  # type: ignore
+from core.domain.entities.candle_entity import CandleEntity
 from core.repositories.candle_repository import CandleRepository
 from core.repositories.processing_offset_repository import ProcessingOffsetRepository
 
@@ -116,21 +117,21 @@ class BackfillCandlesUseCase:
                 v = float(k[5])
                 trades = int(k[8]) if len(k) > 8 else 0
 
-                candle_doc: Dict[str, Any] = {
-                    "symbol": symbol_upper,
-                    "interval": interval,
-                    "open_time": open_time,
-                    "close_time": close_time,
-                    "open": o,
-                    "high": h,
-                    "low": l,
-                    "close": c,
-                    "volume": v,
-                    "trades": trades,
-                    "is_closed": True,
-                }
+                candle = CandleEntity(
+                    symbol = symbol_upper,
+                    interval = interval,
+                    open_time= open_time,
+                    close_time= close_time,
+                    open= o,
+                    high= h,
+                    low= l,
+                    close= c,
+                    volume= v,
+                    trades= trades,
+                    is_closed= True,
+                )
 
-                await self._candles.upsert_closed_candle(candle_doc)
+                await self._candles.upsert_closed_candle(candle)
                 await self._offsets.set_last_closed_open_time(
                     stream_key, open_time
                 )
