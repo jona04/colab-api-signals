@@ -5,6 +5,7 @@ from math import sqrt
 from typing import Dict, List, Optional, Tuple
 
 from adapters.external.notify.telegram_notifier import TelegramNotifier
+from core.common.utils import sanitize_for_bson
 from core.domain.entities.signal_entity import SignalEntity
 from core.repositories.strategy_episode_repository import StrategyEpisodeRepository
 from core.services.idempotency_key_service import IdempotencyKeyService
@@ -1316,6 +1317,23 @@ class ExecuteSignalPipelineUseCase:
                     "cur_labels": cur_labels,
                 }
 
+                safe_prev_baseline = {
+                    "gauge_rewards_pending_cake": prev_pending_cake,
+                    "gauge_rewards_pending_usd_est": prev_pending_cake_usd_est,
+                    "gauge_reward_balances_in_vault_cake": prev_cake_in_vault,
+
+                    "rewards_collected_usdc": prev_rewards_usdc_lifetime,
+
+                    "fees_uncollected_token0": prev_uncol_t0,
+                    "fees_uncollected_token1": prev_uncol_t1,
+                    "fees_collected_token0": prev_col_t0,
+                    "fees_collected_token1": prev_col_t1,
+
+                    "fees_total_token0": prev_lifetime_fee_t0,
+                    "fees_total_token1": prev_lifetime_fee_t1,
+                    "rewards_total_cake": prev_rewards_cake_lifetime,
+                }
+                                
                 # -------------------------
                 # 8) Monta métricas completas
                 # -------------------------
@@ -1333,7 +1351,7 @@ class ExecuteSignalPipelineUseCase:
 
                     "fees_lifetime_now": lifetime_now,
                     "fees_lifetime_baseline": baseline_for_next,
-                    "fees_lifetime_prev_baseline": prev_baseline_dict,
+                    "fees_lifetime_prev_baseline": safe_prev_baseline,
                     "total_fees_lifetime_now": total_fees_lifetime_now,
 
                     "fees_this_episode_tokens": {
@@ -1358,11 +1376,13 @@ class ExecuteSignalPipelineUseCase:
                     "APR_annualy_pct": APR_annualy_pct,
                 }
 
+                metrics_safe = sanitize_for_bson(metrics)
+                
                 # persiste métricas no episódio anterior (fechado)
                 await self._episode_repo.update_partial(
                     last_episode_id,
                     {
-                        "metrics": metrics
+                        "metrics": metrics_safe
                     },
                 )
 
