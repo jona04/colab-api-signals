@@ -1074,7 +1074,21 @@ class ExecuteSignalPipelineUseCase:
                 fees_uncollected = snapshot.get("fees_uncollected") or {}
                 fees_collected_cum = snapshot.get("fees_collected_cum") or {}
                 gauge_reward_balances = snapshot.get("gauge_reward_balances") or {}
-
+                
+                fees_uncollected_st = {}
+                fees_uncollected_st_usd = 0
+                gauge_rewards_st_usd = 0
+                if st:
+                    fees_uncollected_st = st.get("fees_uncollected") or {}
+                    fees_uncollected_st_usd = fees_uncollected_st.get("usd", 0)
+                    gauge_rewards_st = st.get("gauge_rewards") or {}
+                    gauge_rewards_st_usd = gauge_rewards_st.get("pending_usd_est", 0)
+                
+                fees_and_gauges_st = {
+                    "fees_uncollected_st": fees_uncollected_st,
+                    "gauge_rewards_st_usd": gauge_rewards_st_usd
+                }
+                
                 # -------------------------
                 # 1) Lifetime atual (fechamento da pool anterior) em tokens
                 # -------------------------
@@ -1163,6 +1177,7 @@ class ExecuteSignalPipelineUseCase:
                     "fees_uncollected_token1": max(prev_uncol_t1, lifetime_now["fees_uncollected_token1"]),
                     "fees_collected_token0": max(prev_col_t0, lifetime_now["fees_collected_token0"]),
                     "fees_collected_token1": max(prev_col_t1, lifetime_now["fees_collected_token1"]),
+                    "fees_uncollected_st_usd": fees_uncollected_st_usd,
 
                     "fees_total_token0": max(prev_lifetime_fee_t0, lifetime_now["fees_total_token0"]),
                     "fees_total_token1": max(prev_lifetime_fee_t1, lifetime_now["fees_total_token1"]),
@@ -1253,7 +1268,20 @@ class ExecuteSignalPipelineUseCase:
 
                 APR_daily_pct = APR_daily * 100.0
                 APR_annualy_pct = APR_annualy * 100.0
-
+                
+                APR_daily2 = 0.0
+                APR_annualy2 = 0.0
+                fees_this_episode_usd2=fees_uncollected_st_usd+gauge_rewards_st_usd
+                if total_position_usd > 0.0 and fees_this_episode_usd2 > 0.0:
+                    
+                    percentage_fee_vs_position = fees_this_episode_usd2 / total_position_usd
+                    APR_daily2 = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
+                    APR_annualy2 = APR_daily2 * 365.0
+                    
+                APR_daily_pct2 = APR_daily2 * 100.0
+                APR_annualy_pct2 = APR_annualy2 * 100.0
+                
+                
                 # -------------------------
                 # 7) Metadados de episódio (anterior x atual)
                 # -------------------------
@@ -1353,7 +1381,12 @@ class ExecuteSignalPipelineUseCase:
                     "fees_lifetime_baseline": baseline_for_next,
                     "fees_lifetime_prev_baseline": safe_prev_baseline,
                     "total_fees_lifetime_now": total_fees_lifetime_now,
-
+                    "fees_and_gauges_st": {
+                        "values":fees_and_gauges_st,
+                        "APR_daily_pct2": APR_daily_pct2,
+                        "APR_annualy_pct2": APR_annualy_pct2
+                    },
+                    
                     "fees_this_episode_tokens": {
                         "fee_token0": delta_fee_t0_tokens,
                         "fee_token1": delta_fee_t1_tokens,
