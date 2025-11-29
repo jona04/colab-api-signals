@@ -1479,6 +1479,8 @@ class ExecuteSignalPipelineUseCase:
                     lines.append(f"• Total fees do episódio (USD): {fees_this_episode_usd:.6f}")
                     lines.append(f"• APR diário aproximado: {APR_daily_pct:.4f}%")
                     lines.append(f"• APR anualizado aproximado: {APR_annualy_pct:.4f}%")
+                    lines.append(f"• APR diário 2 aproximado: {APR_daily_pct2:.4f}%")
+                    lines.append(f"• APR anualizado 2 aproximado: {APR_annualy_pct2:.4f}%")
                     lines.append("")
 
                     # =========================
