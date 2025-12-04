@@ -1084,112 +1084,12 @@ class ExecuteSignalPipelineUseCase:
                     gauge_rewards_st = st.get("gauge_rewards") or {}
                     gauge_rewards_st_usd = gauge_rewards_st.get("pending_usd_est", 0)
                 
-                fees_and_gauges_st = {
-                    "fees_uncollected_st": fees_uncollected_st,
-                    "gauge_rewards_st_usd": gauge_rewards_st_usd
-                }
                 
                 # -------------------------
                 # 1) Lifetime atual (fechamento da pool anterior) em tokens
                 # -------------------------
                 pending_cake = float(gauge_rewards.get("pending_amount") or 0.0)
                 pending_cake_usd_est = float(gauge_rewards.get("pending_usd_est") or 0.0)
-                cake_in_vault = float(gauge_reward_balances.get("in_vault") or 0.0)
-
-                rewards_usdc_lifetime = float(rewards_collected_cum.get("usdc") or 0.0)
-
-                fees_uncol_t0 = float(fees_uncollected.get("token0") or 0.0)
-                fees_uncol_t1 = float(fees_uncollected.get("token1") or 0.0)
-                fees_col_t0 = float(fees_collected_cum.get("token0") or 0.0)
-                fees_col_t1 = float(fees_collected_cum.get("token1") or 0.0)
-
-                lifetime_now = {
-                    # CAKE
-                    "gauge_rewards_pending_cake": pending_cake,
-                    "gauge_rewards_pending_usd_est": pending_cake_usd_est,
-                    "gauge_reward_balances_in_vault_cake": cake_in_vault,
-
-                    # Rewards já realizados em USDC
-                    "rewards_collected_usdc": rewards_usdc_lifetime,
-
-                    # Fees LP
-                    "fees_uncollected_token0": fees_uncol_t0,
-                    "fees_uncollected_token1": fees_uncol_t1,
-                    "fees_collected_token0": fees_col_t0,
-                    "fees_collected_token1": fees_col_t1,
-                }
-
-                # agregados
-                lifetime_now["fees_total_token0"] = (
-                    lifetime_now["fees_uncollected_token0"] +
-                    lifetime_now["fees_collected_token0"]
-                )
-                lifetime_now["fees_total_token1"] = (
-                    lifetime_now["fees_uncollected_token1"] +
-                    lifetime_now["fees_collected_token1"]
-                )
-                lifetime_now["rewards_total_cake"] = (
-                    lifetime_now["gauge_rewards_pending_cake"] +
-                    lifetime_now["gauge_reward_balances_in_vault_cake"]
-                )
-
-                # -------------------------
-                # 2) Baseline anterior (prev) – em tokens
-                # -------------------------
-                prev_metrics = (last_episode.get("metrics") or {})
-                prev_baseline_dict = prev_metrics.get("fees_lifetime_baseline") or {}
-
-                def _prev(key: str) -> float:
-                    return float(prev_baseline_dict.get(key) or 0.0)
-
-                prev_lifetime_fee_t0       = _prev("fees_total_token0")
-                prev_lifetime_fee_t1       = _prev("fees_total_token1")
-                prev_rewards_usdc_lifetime = _prev("rewards_collected_usdc")
-                prev_rewards_cake_lifetime = _prev("rewards_total_cake")
-
-                prev_pending_cake          = _prev("gauge_rewards_pending_cake")
-                prev_pending_cake_usd_est  = _prev("gauge_rewards_pending_usd_est")
-                prev_cake_in_vault         = _prev("gauge_reward_balances_in_vault_cake")
-                prev_uncol_t0              = _prev("fees_uncollected_token0")
-                prev_uncol_t1              = _prev("fees_uncollected_token1")
-                prev_col_t0                = _prev("fees_collected_token0")
-                prev_col_t1                = _prev("fees_collected_token1")
-
-                # -------------------------
-                # 3) Deltas deste episódio (fechamento da pool anterior) em tokens
-                # -------------------------
-                delta_fee_t0_tokens = max(0.0, lifetime_now["fees_total_token0"] - prev_lifetime_fee_t0)
-                delta_fee_t1_tokens = max(0.0, lifetime_now["fees_total_token1"] - prev_lifetime_fee_t1)
-                delta_rewards_usdc  = max(0.0, lifetime_now["rewards_collected_usdc"] - prev_rewards_usdc_lifetime)
-                delta_cake_tokens   = max(0.0, lifetime_now["rewards_total_cake"] - prev_rewards_cake_lifetime)
-
-                # -------------------------
-                # 4) Baseline PARA O PRÓXIMO EPISÓDIO (monotônico em tokens)
-                # -------------------------
-                baseline_for_next = {
-                    "gauge_rewards_pending_cake": max(prev_pending_cake, lifetime_now["gauge_rewards_pending_cake"]),
-                    "gauge_rewards_pending_usd_est": max(prev_pending_cake_usd_est, lifetime_now["gauge_rewards_pending_usd_est"]),
-                    "gauge_reward_balances_in_vault_cake": max(prev_cake_in_vault, lifetime_now["gauge_reward_balances_in_vault_cake"]),
-
-                    "rewards_collected_usdc": max(prev_rewards_usdc_lifetime, lifetime_now["rewards_collected_usdc"]),
-
-                    "fees_uncollected_token0": max(prev_uncol_t0, lifetime_now["fees_uncollected_token0"]),
-                    "fees_uncollected_token1": max(prev_uncol_t1, lifetime_now["fees_uncollected_token1"]),
-                    "fees_collected_token0": max(prev_col_t0, lifetime_now["fees_collected_token0"]),
-                    "fees_collected_token1": max(prev_col_t1, lifetime_now["fees_collected_token1"]),
-                    "fees_uncollected_st_usd": fees_uncollected_st_usd,
-
-                    "fees_total_token0": max(prev_lifetime_fee_t0, lifetime_now["fees_total_token0"]),
-                    "fees_total_token1": max(prev_lifetime_fee_t1, lifetime_now["fees_total_token1"]),
-                    "rewards_total_cake": max(prev_rewards_cake_lifetime, lifetime_now["rewards_total_cake"]),
-                }
-
-                total_fees_lifetime_now = {
-                    "fees_total_token0": lifetime_now["fees_total_token0"],
-                    "fees_total_token1": lifetime_now["fees_total_token1"],
-                    "rewards_total_cake": lifetime_now["rewards_total_cake"],
-                    "rewards_collected_usdc": lifetime_now["rewards_collected_usdc"],
-                }
 
                 # -------------------------
                 # 5) Conversão dos deltas -> USD (incluindo CAKE)
@@ -1222,26 +1122,10 @@ class ExecuteSignalPipelineUseCase:
                     usd_per_t0 = p_t1_t0
                     usd_per_t1 = 1.0
 
-                fees_lp_usd_this_episode = (
-                    delta_fee_t0_tokens * usd_per_t0 +
-                    delta_fee_t1_tokens * usd_per_t1
-                )
-
-                # Rewards em USDC (1:1)
-                rewards_usdc_usd_this_episode = delta_rewards_usdc
-
                 # CAKE -> USD: usa pending_usd_est / pending_amount como preço de referência (BEFORE)
                 price_cake_usd = 0.0
                 if pending_cake > 0.0 and pending_cake_usd_est > 0.0:
                     price_cake_usd = pending_cake_usd_est / pending_cake
-
-                rewards_cake_usd_this_episode = delta_cake_tokens * price_cake_usd
-
-                fees_this_episode_usd = (
-                    fees_lp_usd_this_episode +
-                    rewards_usdc_usd_this_episode +
-                    rewards_cake_usd_this_episode
-                )
 
                 # -------------------------
                 # 6) APR (sempre numérico, APR em fração + em %)
@@ -1261,25 +1145,15 @@ class ExecuteSignalPipelineUseCase:
                 APR_annualy = 0.0
                 percentage_fee_vs_position = 0.0
 
+                fees_this_episode_usd=fees_uncollected_st_usd+gauge_rewards_st_usd
                 if total_position_usd > 0.0 and fees_this_episode_usd > 0.0:
+                    
                     percentage_fee_vs_position = fees_this_episode_usd / total_position_usd
                     APR_daily = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
                     APR_annualy = APR_daily * 365.0
-
+                    
                 APR_daily_pct = APR_daily * 100.0
                 APR_annualy_pct = APR_annualy * 100.0
-                
-                APR_daily2 = 0.0
-                APR_annualy2 = 0.0
-                fees_this_episode_usd2=fees_uncollected_st_usd+gauge_rewards_st_usd
-                if total_position_usd > 0.0 and fees_this_episode_usd2 > 0.0:
-                    
-                    percentage_fee_vs_position = fees_this_episode_usd2 / total_position_usd
-                    APR_daily2 = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
-                    APR_annualy2 = APR_daily2 * 365.0
-                    
-                APR_daily_pct2 = APR_daily2 * 100.0
-                APR_annualy_pct2 = APR_annualy2 * 100.0
                 
                 
                 # -------------------------
@@ -1344,24 +1218,7 @@ class ExecuteSignalPipelineUseCase:
                     "prev_labels": prev_labels,
                     "cur_labels": cur_labels,
                 }
-
-                safe_prev_baseline = {
-                    "gauge_rewards_pending_cake": prev_pending_cake,
-                    "gauge_rewards_pending_usd_est": prev_pending_cake_usd_est,
-                    "gauge_reward_balances_in_vault_cake": prev_cake_in_vault,
-
-                    "rewards_collected_usdc": prev_rewards_usdc_lifetime,
-
-                    "fees_uncollected_token0": prev_uncol_t0,
-                    "fees_uncollected_token1": prev_uncol_t1,
-                    "fees_collected_token0": prev_col_t0,
-                    "fees_collected_token1": prev_col_t1,
-
-                    "fees_total_token0": prev_lifetime_fee_t0,
-                    "fees_total_token1": prev_lifetime_fee_t1,
-                    "rewards_total_cake": prev_rewards_cake_lifetime,
-                }
-                                
+       
                 # -------------------------
                 # 8) Monta métricas completas
                 # -------------------------
@@ -1377,28 +1234,14 @@ class ExecuteSignalPipelineUseCase:
                     "fees_uncollected": fees_uncollected,
                     "fees_collected_cum": fees_collected_cum,
 
-                    "fees_lifetime_now": lifetime_now,
-                    "fees_lifetime_baseline": baseline_for_next,
-                    "fees_lifetime_prev_baseline": safe_prev_baseline,
-                    "total_fees_lifetime_now": total_fees_lifetime_now,
-                    "fees_and_gauges_st": {
-                        "values":fees_and_gauges_st,
-                        "APR_daily_pct2": APR_daily_pct2,
-                        "APR_annualy_pct2": APR_annualy_pct2
-                    },
-                    
-                    "fees_this_episode_tokens": {
-                        "fee_token0": delta_fee_t0_tokens,
-                        "fee_token1": delta_fee_t1_tokens,
-                        "rewards_cake": delta_cake_tokens,
-                        "rewards_usdc": delta_rewards_usdc,
-                    },
+                    "fees_uncollected_st_usd": fees_uncollected_st_usd,
+                    "gauge_rewards_st_usd": gauge_rewards_st_usd,
                     "fees_this_episode_usd": fees_this_episode_usd,
-                    "fees_this_episode_lp_usd": fees_lp_usd_this_episode,
-                    "fees_this_episode_rewards_usdc": rewards_usdc_usd_this_episode,
-                    "fees_this_episode_rewards_cake_usd": rewards_cake_usd_this_episode,
                     "price_cake_usd_ref": price_cake_usd,
-
+                    
+                    "APR_daily_pct2": APR_daily_pct,
+                    "APR_annualy_pct2": APR_annualy_pct,
+                    
                     "qty_candles": qty_candles,
                     "total_candle_out": total_candle_out,
                     "qty_candles_out_in_formula": qty_candles_out_in_formula,
@@ -1418,17 +1261,6 @@ class ExecuteSignalPipelineUseCase:
                         "metrics": metrics_safe
                     },
                 )
-
-                # e baseline para o episódio atual
-                if episode_id:
-                    await self._episode_repo.update_partial(
-                        episode_id,
-                        {
-                            "metrics": {
-                                "fees_lifetime_baseline": baseline_for_next,
-                            }
-                        },
-                    )
 
                 # -------------------------
                 # 9) Notificação Telegram
@@ -1472,15 +1304,11 @@ class ExecuteSignalPipelineUseCase:
                     # MÉTRICAS DA POOL ANTERIOR
                     # =========================
                     lines.append("**📈 Métricas – Episódio encerrado**")
-                    lines.append(f"• Fees LP token0: {delta_fee_t0_tokens:.8f}  (lifetime: {lifetime_now['fees_total_token0']:.8f})")
-                    lines.append(f"• Fees LP token1: {delta_fee_t1_tokens:.8f}  (lifetime: {lifetime_now['fees_total_token1']:.8f})")
-                    lines.append(f"• Rewards em USDC: {delta_rewards_usdc:.8f}  (lifetime: {lifetime_now['rewards_collected_usdc']:.8f})")
-                    lines.append(f"• Rewards em CAKE (tokens): {delta_cake_tokens:.8f}")
+                    lines.append(f"• Fees LP uncollected: {fees_uncollected_st_usd:.8f}")
+                    lines.append(f"• Rewards em USDC: {gauge_rewards_st_usd:.8f}")
                     lines.append(f"• Total fees do episódio (USD): {fees_this_episode_usd:.6f}")
                     lines.append(f"• APR diário aproximado: {APR_daily_pct:.4f}%")
                     lines.append(f"• APR anualizado aproximado: {APR_annualy_pct:.4f}%")
-                    lines.append(f"• APR diário 2 aproximado: {APR_daily_pct2:.4f}%")
-                    lines.append(f"• APR anualizado 2 aproximado: {APR_annualy_pct2:.4f}%")
                     lines.append("")
 
                     # =========================
