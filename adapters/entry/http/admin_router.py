@@ -3,6 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from core.domain.entities.strategy_entity import StrategyEntity
+
 from .deps import get_db
 from ...external.database.indicator_set_repository_mongodb import IndicatorSetRepositoryMongoDB
 from ...external.database.strategy_repository_mongodb import StrategyRepositoryMongoDB
@@ -163,14 +165,15 @@ async def create_strategy(dto: StrategyCreateDTO, db: AsyncIOMotorDatabase = Dep
 
     # Store strategy with indicator_set_id and cfg_hash (same logical id here)
     strat_repo = StrategyRepositoryMongoDB(db)
-    stored = await strat_repo.upsert({
-        "name": dto.name,
-        "symbol": dto.symbol,
-        "status": "ACTIVE",
-        "indicator_set_id": set_doc["cfg_hash"],
-        "cfg_hash": set_doc["cfg_hash"],
-        "params": dto.params.model_dump(),
-    })
+    stored = await strat_repo.upsert(
+       StrategyEntity(
+            name = dto.name,
+            symbol = dto.symbol,
+            status= "ACTIVE",
+            indicator_set_id= set_doc.cfg_hash,
+            params = dto.params.model_dump(),
+       )
+    )
     if not stored:
         raise HTTPException(status_code=500, detail="Failed to upsert strategy")
     return stored
