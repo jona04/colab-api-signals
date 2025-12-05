@@ -142,9 +142,9 @@ class StrategyOutDTO(BaseModel):
     name: str
     symbol: str
     status: str
-    indicator_set_id: str
-    cfg_hash: str
-    params: StrategyParamsDTO
+    indicator_set_id: Optional[str] = None
+    cfg_hash: Optional[str] = None
+    params: Optional[StrategyParamsDTO] = None
     created_at: Optional[int] = None
     created_at_iso: Optional[str] = None
     updated_at: Optional[int] = None
