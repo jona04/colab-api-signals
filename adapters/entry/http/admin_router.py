@@ -170,7 +170,7 @@ async def create_strategy(dto: StrategyCreateDTO, db: AsyncIOMotorDatabase = Dep
             name = dto.name,
             symbol = dto.symbol,
             status= "ACTIVE",
-            indicator_set_id= set_doc.cfg_hash,
+            indicator_set_id= dto.indicator_set_id,
             params = dto.params.model_dump(),
        )
     )
