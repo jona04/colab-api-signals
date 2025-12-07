@@ -1137,9 +1137,9 @@ class ExecuteSignalPipelineUseCase:
                 out_below_streak_total = int(last_episode.get("out_below_streak_total") or 0)
                 total_candle_out = out_above_streak_total + out_below_streak_total
 
-                qty_candles_out_in_formula = float(qty_candles - total_candle_out)
-                if qty_candles_out_in_formula <= 0.0:
-                    qty_candles_out_in_formula = 1.0
+                qty_candles_in_formula = float(qty_candles - total_candle_out)
+                if qty_candles_in_formula <= 0.0:
+                    qty_candles_in_formula = 1.0
 
                 APR_daily = 0.0
                 APR_annualy = 0.0
@@ -1149,7 +1149,7 @@ class ExecuteSignalPipelineUseCase:
                 if total_position_usd > 0.0 and fees_this_episode_usd > 0.0:
                     
                     percentage_fee_vs_position = fees_this_episode_usd / total_position_usd
-                    APR_daily = (1440.0 / qty_candles_out_in_formula) * percentage_fee_vs_position
+                    APR_daily = (1440.0 / qty_candles_in_formula) * percentage_fee_vs_position
                     APR_annualy = APR_daily * 365.0
                     
                 APR_daily_pct = APR_daily * 100.0
@@ -1239,12 +1239,9 @@ class ExecuteSignalPipelineUseCase:
                     "fees_this_episode_usd": fees_this_episode_usd,
                     "price_cake_usd_ref": price_cake_usd,
                     
-                    "APR_daily_pct2": APR_daily_pct,
-                    "APR_annualy_pct2": APR_annualy_pct,
-                    
                     "qty_candles": qty_candles,
                     "total_candle_out": total_candle_out,
-                    "qty_candles_out_in_formula": qty_candles_out_in_formula,
+                    "qty_candles_in_formula": qty_candles_in_formula,
                     "percentage_fee_vs_position": percentage_fee_vs_position,
                     "APR_daily": APR_daily,
                     "APR_annualy": APR_annualy,
