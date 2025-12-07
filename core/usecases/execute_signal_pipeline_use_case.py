@@ -1315,23 +1315,9 @@ class ExecuteSignalPipelineUseCase:
                     lines.append(f"• Posição USD no fechamento: {total_position_usd:.6f}")
                     lines.append(f"• Nº total de candles: {qty_candles}")
                     lines.append(f"• Candles fora da pool: {total_candle_out}")
-                    lines.append(f"• Candles válidos p/ APR: {qty_candles_out_in_formula:.2f}")
+                    lines.append(f"• Candles válidos p/ APR: {qty_candles_in_formula:.2f}")
                     lines.append(f"• Percentual fees/posição: {(percentage_fee_vs_position * 100):.4f}%")
                     lines.append("")
-
-                    # =========================
-                    # SNAPSHOT DE MÉTRICAS (PARCIAL)
-                    # =========================
-                    # try:
-                    #     metrics_json = json.dumps(metrics, default=str, ensure_ascii=False)
-                    # except Exception:
-                    #     metrics_json = "erro ao serializar métricas para JSON"
-
-                    # if len(metrics_json) > 1500:
-                    #     metrics_json = metrics_json[:1500] + " ... (truncado)"
-
-                    # lines.append("**📄 Snapshot parcial das métricas:**")
-                    # lines.append(metrics_json)
 
                     # envia
                     text = "\n".join(lines)
