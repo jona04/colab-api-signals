@@ -282,9 +282,16 @@ class EvaluateActiveStrategiesUseCase:
         atr_pct = float(snapshot["atr_pct"])
         ts = int(snapshot["ts"])
         
-        # timestamp como datetime (UTC) para gating de low-vol
-        dt_now = datetime.fromtimestamp(ts, tz=timezone.utc)
-        
+        created_at_iso = snapshot.get("created_at_iso")
+        if created_at_iso:
+            # trata o 'Z' do final como UTC
+            if created_at_iso.endswith("Z"):
+                created_at_iso = created_at_iso.replace("Z", "+00:00")
+            dt_now = datetime.fromisoformat(created_at_iso)
+        else:
+            # fallback: usa ts (lembrando que está em ms)
+            dt_now = datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc)
+            
         strategies: List[StrategyEntity] = await self._strategy_repo.get_active_by_indicator_set(
             indicator_set_id=indicator_set["cfg_hash"]
         )
