@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 import logging
 from typing import Dict, List, Optional, Tuple
 
@@ -13,6 +13,43 @@ from ..repositories.strategy_repository import StrategyRepository
 from ..repositories.strategy_episode_repository import StrategyEpisodeRepository
 from ..repositories.signal_repository import SignalRepository
 from ..repositories.indicator_set_repository import IndicatorSetRepository
+
+# LOW-VOL WINDOWS (hardcoded por enquanto; futuramente virá de Strategy.params["low_vol_keys"])
+LOW_VOL_KEYS_DEFAULT = {
+    (2, time(11, 0)),
+    (5, time(2, 0)),
+    (5, time(3, 0)),
+    (5, time(4, 0)),
+    (5, time(5, 0)),
+    (5, time(6, 0)),
+    (5, time(7, 0)),
+    (5, time(8, 0)),
+    (5, time(9, 0)),
+    (5, time(10, 0)),
+    (5, time(11, 0)),
+    (5, time(12, 0)),
+    (5, time(18, 0)),
+    (5, time(19, 0)),
+    (5, time(20, 0)),
+    (5, time(21, 0)),
+    (5, time(22, 0)),
+    (5, time(23, 0)),
+    (6, time(0, 0)),
+    (6, time(1, 0)),
+    (6, time(2, 0)),
+    (6, time(3, 0)),
+    (6, time(4, 0)),
+    (6, time(5, 0)),
+    (6, time(6, 0)),
+    (6, time(7, 0)),
+    (6, time(8, 0)),
+    (6, time(9, 0)),
+    (6, time(10, 0)),
+    (6, time(11, 0)),
+    (6, time(12, 0)),
+    (6, time(20, 0)),
+    (6, time(21, 0)),
+}
 
 
 class EvaluateActiveStrategiesUseCase:
@@ -44,6 +81,90 @@ class EvaluateActiveStrategiesUseCase:
     def _gate_high_vol(atr_pct: Optional[float], threshold: Optional[float]) -> bool:
         return (atr_pct is not None) and (threshold is not None) and (atr_pct > threshold)
 
+    @staticmethod
+    def _get_low_vol_keys(params: Dict, gating_enabled: bool) -> Optional[set]:
+        """
+        Retorna o set de (dow, time) considerado janela low-vol.
+
+        Por enquanto:
+        - se não houver gating habilitado -> None (sem efeito).
+        - se houver 'low_vol_keys' em params, tentar parsear (futuro).
+        - senão usa LOW_VOL_KEYS_DEFAULT (hardcoded).
+        """
+        if not gating_enabled:
+            return None
+
+        keys_param = params.get("low_vol_keys")
+        if keys_param:
+            parsed = set()
+            try:
+                # Espera algo como [[dow, "HH:MM"], ...] ou [[dow, hour, minute], ...]
+                for item in keys_param:
+                    if isinstance(item, (list, tuple)):
+                        if len(item) == 2:
+                            dow, t = item
+                            if isinstance(t, str):
+                                hh, mm = map(int, t.split(":")[:2])
+                                parsed.add((int(dow), time(hh, mm)))
+                        elif len(item) == 3:
+                            dow, hh, mm = item
+                            parsed.add((int(dow), time(int(hh), int(mm))))
+                if parsed:
+                    return parsed
+            except Exception:
+                # se der erro, cai no default
+                pass
+
+        return LOW_VOL_KEYS_DEFAULT
+
+    @staticmethod
+    def _is_in_low_vol_window(
+        dt_now: datetime,
+        low_vol_keys: Optional[set],
+    ) -> bool:
+        """
+        True se (dia da semana, hora arredondada p/ hora cheia) estiver na low_vol_keys.
+        """
+        if not low_vol_keys:
+            return False
+        bucket_time = dt_now.replace(minute=0, second=0, microsecond=0)
+        key = (bucket_time.weekday(), bucket_time.time())
+        return key in low_vol_keys
+
+    @staticmethod
+    def _is_effectively_low_vol(
+        dt_now: datetime,
+        atr_pct: Optional[float],
+        params: Dict,
+        low_vol_keys: Optional[set],
+        gating_enabled: bool,
+    ) -> bool:
+        """
+        Considera low-vol se:
+          - gating_enabled == True E
+          - (estiver em uma janela estável (low_vol_keys) OU
+             (low_vol_threshold definido E atr_pct < 0.0007))
+
+        Se gating_enabled == False, sempre retorna True (comportamento antigo).
+        """
+        if not gating_enabled:
+            return True
+
+        in_bucket = False
+        if low_vol_keys:
+            in_bucket = EvaluateActiveStrategiesUseCase._is_in_low_vol_window(
+                dt_now, low_vol_keys
+            )
+
+        low_vol_threshold_flag = params.get("low_vol_threshold")
+        by_atr = (
+            low_vol_threshold_flag is not None
+            and atr_pct is not None
+            and atr_pct < low_vol_threshold_flag
+        )
+
+        return in_bucket or by_atr
+    
     # === Helpers de banda (clamps e largura total) ===
     @staticmethod
     def _ensure_valid_band(Pa: float, Pb: float, P: float) -> Tuple[float, float]:
@@ -160,7 +281,10 @@ class EvaluateActiveStrategiesUseCase:
         ema_s = float(snapshot["ema_slow"])
         atr_pct = float(snapshot["atr_pct"])
         ts = int(snapshot["ts"])
-
+        
+        # timestamp como datetime (UTC) para gating de low-vol
+        dt_now = datetime.fromtimestamp(ts, tz=timezone.utc)
+        
         strategies: List[StrategyEntity] = await self._strategy_repo.get_active_by_indicator_set(
             indicator_set_id=indicator_set["cfg_hash"]
         )
@@ -176,15 +300,49 @@ class EvaluateActiveStrategiesUseCase:
             gauge_flow_enabled = bool(params.get("gauge_flow_enabled", False))
             trend_now = self._trend_at(ema_f, ema_s)
             
+            # ===== Config de LOW-VOL (janela segura) =====
+            low_vol_threshold_flag = params.get("low_vol_threshold")
+            # gating habilitado se qualquer uma das configs de low-vol estiver presente
+            gating_enabled = bool(
+                low_vol_threshold_flag is not None
+            )
+            low_vol_keys = self._get_low_vol_keys(params, gating_enabled)
+            
             # 1) episódio atual
             strat_id = strat.name
             current = await self._episode_repo.get_open_by_strategy(strat_id)
             if current is None:
+                # decide se estamos em low-vol efetivo agora
+                is_low_vol_now = self._is_effectively_low_vol(
+                    dt_now,
+                    atr_pct,
+                    params,
+                    low_vol_keys,
+                    gating_enabled,
+                )
+
+                if is_low_vol_now:
+                    # comportamento original: abre STANDARD pela tendência
+                    initial_pool_type = "standard"
+                    trend_for_pick = trend_now
+                    width_override = params.get("standard_max_major_side_pct")
+                else:
+                    # fora de low-vol: força abrir HIGH_VOL com viés de queda
+                    initial_pool_type = "high_vol"
+                    trend_for_pick = "down"
+                    width_override = params.get(
+                        "high_vol_max_major_side_pct",
+                        params.get("standard_max_major_side_pct"),
+                    )
+                    
                 # abre primeira banda centrada pela tendência
                 Pa, Pb, mode, majority, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
-                    P, self._trend_at(ema_f, ema_s), params, atr_pct,
-                    total_width_override=params.get("standard_max_major_side_pct"),
-                    pool_type="standard",
+                    P, 
+                    trend_for_pick, 
+                    params, 
+                    atr_pct,
+                    total_width_override=width_override,
+                    pool_type=initial_pool_type,
                 )
 
                 if majority == "token1":
@@ -198,7 +356,7 @@ class EvaluateActiveStrategiesUseCase:
                     id=f"ep_{strat_id}_{ts}",
                     strategy_id=strat_id,
                     symbol=symbol,
-                    pool_type="standard",
+                    pool_type=initial_pool_type,
                     mode_on_open=mode,
                     majority_on_open=majority,
                     target_major_pct=major_pct,
@@ -248,6 +406,20 @@ class EvaluateActiveStrategiesUseCase:
             mode_on_open_cur = current.mode_on_open
             majority_on_open_cur = current.majority_on_open
             
+            # ===== Guard: se estamos em high_vol trend_down FORA do low-vol window,
+            # não deixamos QUALQUER sinal fechar/reabrir a pool.
+            forced_high_vol_down_locked = (
+                pool_type_cur == "high_vol"
+                and mode_on_open_cur == "trend_down"
+                and not self._is_effectively_low_vol(
+                    dt_now,
+                    atr_pct,
+                    params,
+                    low_vol_keys,
+                    gating_enabled,
+                )
+            )
+            
             i_since_open = int(current.last_event_bar) + 1
             out_above_streak = int(current.out_above_streak)
             out_below_streak = int(current.out_below_streak)
@@ -270,83 +442,90 @@ class EvaluateActiveStrategiesUseCase:
                 "last_event_bar": i_since_open
             })
 
-            if out_above_streak >= breakout_confirm:
-                trigger = "cross_max"
-            elif out_below_streak >= breakout_confirm:
-                trigger = "cross_min"
-
-            # 3) gate high vol (evita reabrir se já high_vol)
-            if not trigger:
-                vol_th = params.get("vol_high_threshold_pct")
-                vol_th_down = params.get("vol_high_threshold_pct_down")
-                
-                # escolhe o threshold de acordo com a tendência
-                chosen_th: Optional[float] = None
-                if trend_now == "down" and vol_th_down is not None:
-                    chosen_th = float(vol_th_down)
-                elif vol_th is not None:
-                    chosen_th = float(vol_th)
-                    
-                if (
-                    atr_pct is not None
-                    and chosen_th is not None
-                    and atr_pct > chosen_th
-                    and pool_type_cur != "high_vol"
-                ):
-                    trigger = "high_vol"
-            
-            # flip de direção dentro de high_vol
-            if not trigger and pool_type_cur == "high_vol":
-                ema_f_s_percentage = ((ema_f/ema_s)-1)*100
-                if mode_on_open_cur == "trend_down" and ema_f_s_percentage > 0.3:
-                    trigger = "high_vol"
-                elif mode_on_open_cur == "trend_up" and ema_f_s_percentage < -0.3:
-                    trigger = "high_vol"
-            
-            # 4) tiers — apenas se in-range e sem trigger ainda
             in_range_now = (Pa_cur < P < Pb_cur)
-            if (
-                not trigger
-                and in_range_now
-                and i_since_open >= cooloff
-            ):
-                tiers_cfg: List[Dict] = list(params.get("tiers", []))
-                chosen_tier = None
-                for tier in reversed(tiers_cfg):
-                    name = tier["name"]
-                    allowed_from = tier.get("allowed_from", []) or []
-                    if pool_type_cur == name:
-                        break  # já estamos neste estreitamento
-                    if pool_type_cur not in allowed_from:
-                        continue
+            
+            # se estiver travado em high_vol_down fora de low-vol, NÃO gera trigger nenhum
+            if not forced_high_vol_down_locked:
+                if out_above_streak >= breakout_confirm:
+                    trigger = "cross_max"
+                elif out_below_streak >= breakout_confirm:
+                    trigger = "cross_min"
+
+                # 3) gate high vol (evita reabrir se já high_vol)
+                if not trigger:
+                    vol_th = params.get("vol_high_threshold_pct")
+                    vol_th_down = params.get("vol_high_threshold_pct_down")
                     
-                    thr_up = tier.get("atr_pct_threshold")
-                    thr_down = tier.get("atr_pct_threshold_down")
-                    
-                    # escolhe threshold conforme tendência (igual backtest)
-                    if trend_now == "down" and thr_down is not None:
-                        thr = float(thr_down)
-                    else:
-                        thr = float(thr_up)
+                    # escolhe o threshold de acordo com a tendência
+                    chosen_th: Optional[float] = None
+                    if trend_now == "down" and vol_th_down is not None:
+                        chosen_th = float(vol_th_down)
+                    elif vol_th is not None:
+                        chosen_th = float(vol_th)
                         
-                    bars_req = int(tier["bars_required"])
-                    
-                    if atr_pct is not None and atr_pct <= thr:
-                        atr_streaks[name] = int(atr_streaks.get(name, 0)) + 1
-                    else:
-                        atr_streaks[name] = 0
-                    
-                    if atr_streaks[name] >= bars_req:
-                        chosen_tier = tier
-                        break
-                    
-                await self._episode_repo.update_partial(current.id, {
-                    "atr_streak": atr_streaks,
-                })
+                    if (
+                        atr_pct is not None
+                        and chosen_th is not None
+                        and atr_pct > chosen_th
+                        and pool_type_cur != "high_vol"
+                    ):
+                        trigger = "high_vol"
+                
+                # flip de direção dentro de high_vol
+                if not trigger and pool_type_cur == "high_vol":
+                    ema_f_s_percentage = ((ema_f/ema_s)-1)*100
+                    if mode_on_open_cur == "trend_down" and ema_f_s_percentage > 0.3:
+                        trigger = "high_vol"
+                    elif mode_on_open_cur == "trend_up" and ema_f_s_percentage < -0.3:
+                        trigger = "high_vol"
+            
+                # 4) tiers — apenas se in-range e sem trigger ainda
+                if (
+                    not trigger
+                    and in_range_now
+                    and i_since_open >= cooloff
+                ):
+                    tiers_cfg: List[Dict] = list(params.get("tiers", []))
+                    chosen_tier = None
+                    for tier in reversed(tiers_cfg):
+                        name = tier["name"]
+                        allowed_from = tier.get("allowed_from", []) or []
+                        if pool_type_cur == name:
+                            break  # já estamos neste estreitamento
+                        if pool_type_cur not in allowed_from:
+                            continue
+                        
+                        thr_up = tier.get("atr_pct_threshold")
+                        thr_down = tier.get("atr_pct_threshold_down")
+                        
+                        # escolhe threshold conforme tendência (igual backtest)
+                        if trend_now == "down" and thr_down is not None:
+                            thr = float(thr_down)
+                        else:
+                            thr = float(thr_up)
+                            
+                        bars_req = int(tier["bars_required"])
+                        
+                        if atr_pct is not None and atr_pct <= thr:
+                            atr_streaks[name] = int(atr_streaks.get(name, 0)) + 1
+                        else:
+                            atr_streaks[name] = 0
+                        
+                        if atr_streaks[name] >= bars_req:
+                            chosen_tier = tier
+                            break
+                        
+                    await self._episode_repo.update_partial(current.id, {
+                        "atr_streak": atr_streaks,
+                    })
 
-                if chosen_tier:
-                    trigger = f"tighten_{chosen_tier['name']}"
+                    if chosen_tier:
+                        trigger = f"tighten_{chosen_tier['name']}"
 
+            else:
+                # travado: literalmente nada de gatilho neste candle
+                pass
+            
             # 5) sem gatilho -> segue
             if not trigger:
                 continue
@@ -371,25 +550,49 @@ class EvaluateActiveStrategiesUseCase:
             
             # helper para abrir com "total width"; aplica preserve quando aplicável
             def _open_with_width(next_pool_type: str, total_width_override: Optional[float]) -> StrategyEpisodeEntity:
-                # decide total width alvo
+                # decide se é low-vol efetivo neste snapshot
+                is_low_vol_now = self._is_effectively_low_vol(
+                    dt_now,
+                    atr_pct,
+                    params,
+                    low_vol_keys,
+                    gating_enabled,
+                )
+                
+                # se NÃO for low-vol => força abrir high_vol trend_down (igual backtest)
+                if not is_low_vol_now:
+                    desired_type = "high_vol"
+                    trend_for_pick = "down"
+                    width_key_default = "high_vol_max_major_side_pct"
+                else:
+                    desired_type = next_pool_type
+                    trend_for_pick = trend_now
+                    if next_pool_type == "high_vol":
+                        width_key_default = "high_vol_max_major_side_pct"
+                    else:
+                        width_key_default = "standard_max_major_side_pct"
+                        
                 if total_width_override is not None:
                     total_width_pct = float(total_width_override)
-                elif next_pool_type == "high_vol":
-                    total_width_pct = float(params.get("high_vol_max_major_side_pct", 0.10))
                 else:
-                    total_width_pct = float(params.get("standard_max_major_side_pct", 0.05))
+                    total_width_pct = float(
+                        params.get(
+                            width_key_default,
+                            params.get("standard_max_major_side_pct", 0.05),
+                        )
+                    )
 
                 total_width_pct = max(total_width_pct, 2e-6)
                 
                 Pa_new, Pb_new, mode_now, majority_now, _, pct_below_base, pct_above_base = \
-                        self._pick_band_for_trend_totalwidth(
-                            P,
-                            trend_now,
-                            params,
-                            atr_pct,
-                            total_width_override=total_width_pct,
-                            pool_type=next_pool_type,
-                        )
+                    self._pick_band_for_trend_totalwidth(
+                        P,
+                        trend_for_pick,
+                        params,
+                        atr_pct,
+                        total_width_override=total_width_pct,
+                        pool_type=desired_type,
+                    )
                     
                 if majority_now == "token1":
                     major_pct = pct_below_base*10
@@ -403,7 +606,7 @@ class EvaluateActiveStrategiesUseCase:
                     id=f"ep_{strat_id}_{ts}",
                     strategy_id=strat_id,
                     symbol=symbol,
-                    pool_type=next_pool_type,
+                    pool_type=desired_type,
                     mode_on_open=mode_now,
                     majority_on_open=majority_now,
                     target_major_pct=major_pct,
