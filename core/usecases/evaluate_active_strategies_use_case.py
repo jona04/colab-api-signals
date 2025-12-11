@@ -339,7 +339,7 @@ class EvaluateActiveStrategiesUseCase:
                     trend_for_pick = "down"
                     width_override = params.get(
                         "high_vol_max_major_side_pct",
-                        params.get("standard_max_major_side_pct"),
+                        2,
                     )
                     
                 # abre primeira banda centrada pela tendência
@@ -571,6 +571,11 @@ class EvaluateActiveStrategiesUseCase:
                     desired_type = "high_vol"
                     trend_for_pick = "down"
                     width_key_default = "high_vol_max_major_side_pct"
+                    
+                    total_width_override = params.get(
+                        "high_vol_max_major_side_pct",
+                        params.get("standard_max_major_side_pct", 0.10),
+                    )
                 else:
                     desired_type = next_pool_type
                     trend_for_pick = trend_now
