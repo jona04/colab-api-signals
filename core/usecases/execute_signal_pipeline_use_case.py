@@ -16,6 +16,12 @@ from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
 
 USD_SET = {"USDC","USDBC","USDCE","USDT","DAI","USDD","USDP","BUSD"}
 
+def _bson_safe(value) -> dict:
+    # recursivo
+    if isinstance(value, dict):
+        return {k: _bson_safe(v) for k, v in value.items()}
+    return value
+
 class ExecuteSignalPipelineUseCase:
     """
     Consumes PENDING signals from Mongo and executes their steps IN ORDER
@@ -195,7 +201,7 @@ class ExecuteSignalPipelineUseCase:
                 lock = asyncio.Lock()
                 self._locks[key] = lock
             return lock
-        
+
     async def _append_log(
         self,
         episode_id: Optional[str],
@@ -207,7 +213,8 @@ class ExecuteSignalPipelineUseCase:
         if not episode_id:
             return
         try:
-            await self._episode_repo.append_execution_log(episode_id, base)
+            payload = _bson_safe(base)
+            await self._episode_repo.append_execution_log(episode_id, payload)
         except Exception as log_exc:
             # logging de fallback pra não matar o fluxo
             self._logger.warning("Failed to append_execution_log for %s: %s", episode_id, log_exc)

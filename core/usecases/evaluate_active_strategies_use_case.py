@@ -544,6 +544,7 @@ class EvaluateActiveStrategiesUseCase:
             atr_streaks: Dict = dict(current.atr_streak)
             
             trigger: Optional[str] = None
+            trigger_from_periodic_pool_check = False
             
             # 2) primeiro: decide se vale a pena consultar o pool
             in_range_now = self._is_in_range(P, Pa_cur, Pb_cur, eps)
@@ -567,6 +568,36 @@ class EvaluateActiveStrategiesUseCase:
                 out_above_streak_total, out_below_streak_total,
             )
 
+            # Pperiodic pool truth check using last_event_bar + breakout_confirm ---
+            # Rule: if last_event_bar % breakout_confirm == 0 -> check pool and if pool is out, trigger breakout.
+            # IMPORTANT: do NOT do it when locked (forced_high_vol_down_locked).
+            do_periodic_pool_check = (
+                (not forced_high_vol_down_locked)
+                and breakout_confirm > 0
+                and (i_since_open % breakout_confirm == 0)
+            )
+            
+            if do_periodic_pool_check:
+                P_pool, Pa_pool, Pb_pool, got_pool = await self._try_override_from_pool(
+                    params=params,
+                    P=P,
+                    Pa=Pa_cur,
+                    Pb=Pb_cur,
+                )
+                if got_pool:
+                    # If pool says OUT, behave like breakout (cross_min/cross_max)
+                    if P_pool > Pb_pool * (1.0 + eps):
+                        trigger = "cross_max"
+                        trigger_from_periodic_pool_check = True
+                        P, Pa_cur, Pb_cur = P_pool, Pa_pool, Pb_pool
+                    elif P_pool < Pa_pool * (1.0 - eps):
+                        trigger = "cross_min"
+                        trigger_from_periodic_pool_check = True
+                        P, Pa_cur, Pb_cur = P_pool, Pa_pool, Pb_pool
+
+                    # refresh in_range_now after pool truth (for tiers logic)
+                    in_range_now = self._is_in_range(P, Pa_cur, Pb_cur, eps)
+                    
             # persiste os contadores mesmo sem evento
             await self._episode_repo.update_partial(current.id, {
                 "out_above_streak": out_above_streak,
@@ -671,7 +702,12 @@ class EvaluateActiveStrategiesUseCase:
             )
 
             # Cancel trigger only if cross range and in range inside of the position yet.
-            if trigger in ("cross_min", "cross_max") and p_from_pool and self._is_in_range(P, Pa_cur, Pb_cur, eps):
+            if (
+                (not trigger_from_periodic_pool_check)
+                and trigger in ("cross_min", "cross_max") 
+                and p_from_pool 
+                and self._is_in_range(P, Pa_cur, Pb_cur, eps)
+            ):
                 continue
 
             # 6) fechar episódio atual
