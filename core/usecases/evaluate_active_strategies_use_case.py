@@ -191,6 +191,111 @@ class EvaluateActiveStrategiesUseCase:
         scale = total_width_pct / base_sum
         return pct_below_base * scale, pct_above_base * scale
 
+    @staticmethod
+    def _is_in_range(P: float, Pa: float, Pb: float, eps: float) -> bool:
+        return (P > Pa * (1.0 + eps)) and (P < Pb * (1.0 - eps))
+
+    @staticmethod
+    def _parse_pool_status(st: Dict) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        Returns (P_pool, Pa_pool, Pb_pool) when available/valid, else None(s).
+        """
+        prices = (st.get("prices", {}) or {})
+
+        # --- current price ---
+        P_pool: Optional[float] = None
+        cur = prices.get("current", {}) or {}
+        p_raw = cur.get("p_t1_t0", None)
+        if p_raw is not None:
+            p = float(p_raw)
+            if p > 0.0:
+                P_pool = p
+
+        # --- range ---
+        Pa_pool: Optional[float] = None
+        Pb_pool: Optional[float] = None
+
+        t_lower_raw = st.get("lower", None)
+        t_upper_raw = st.get("upper", None)
+
+        p_low_blk = prices.get("lower", {}) or {}
+        p_up_blk = prices.get("upper", {}) or {}
+
+        t_low_blk = p_low_blk.get("tick", None)
+        t_up_blk = p_up_blk.get("tick", None)
+
+        tA = t_lower_raw if t_lower_raw is not None else t_low_blk
+        tB = t_upper_raw if t_upper_raw is not None else t_up_blk
+
+        if tA is not None and tB is not None:
+            tA = int(tA)
+            tB = int(tB)
+            t_low = min(tA, tB)
+
+            if t_low_blk is not None and int(t_low_blk) == t_low:
+                pa_raw = p_low_blk.get("p_t1_t0", None)
+                pb_raw = p_up_blk.get("p_t1_t0", None)
+            elif t_up_blk is not None and int(t_up_blk) == t_low:
+                pa_raw = p_up_blk.get("p_t1_t0", None)
+                pb_raw = p_low_blk.get("p_t1_t0", None)
+            else:
+                pa_raw = p_low_blk.get("p_t1_t0", None)
+                pb_raw = p_up_blk.get("p_t1_t0", None)
+
+            if pa_raw is not None and pb_raw is not None:
+                pa = float(pa_raw)
+                pb = float(pb_raw)
+                if pa > 0.0 and pb > 0.0:
+                    Pa_pool, Pb_pool = (pa, pb) if pa < pb else (pb, pa)
+
+        return P_pool, Pa_pool, Pb_pool
+
+    async def _try_override_from_pool(
+        self,
+        *,
+        params: Dict,
+        P: float,
+        Pa: float,
+        Pb: float,
+    ) -> Tuple[float, float, float, bool]:
+        """
+        Attempts to override (P,Pa,Pb) from pool status.
+        Returns (P_out, Pa_out, Pb_out, overridden_flag).
+        """
+        dex = params.get("dex", "") or ""
+        alias = params.get("alias", "") or ""
+
+        try:
+            st = await self._lp_client.get_status(dex, alias)
+        except Exception as exc:
+            self._logger.warning(
+                "lp_client.get_status failed; keeping Binance/episode values. dex=%s alias=%s err=%s",
+                dex,
+                alias,
+                exc,
+            )
+            return P, Pa, Pb, False
+
+        if not st:
+            return P, Pa, Pb, False
+
+        try:
+            p_pool, pa_pool, pb_pool = self._parse_pool_status(st)
+            if p_pool is not None:
+                P = p_pool
+            if pa_pool is not None and pb_pool is not None:
+                Pa, Pb = pa_pool, pb_pool
+            return P, Pa, Pb, True
+        except Exception as exc:
+            self._logger.warning(
+                "invalid status payload; keeping Binance/episode values. dex=%s alias=%s err=%s status=%s",
+                dex,
+                alias,
+                exc,
+                st,
+            )
+            return P, Pa, Pb, False
+        
     async def _pick_band_for_trend_totalwidth(
         self,
         P: float,
@@ -440,82 +545,19 @@ class EvaluateActiveStrategiesUseCase:
             trigger: Optional[str] = None
             
             # 2) primeiro: decide se vale a pena consultar o pool
-            in_range_now = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
+            in_range_now = self._is_in_range(P, Pa_cur, Pb_cur, eps)
 
             # se Binance acusou fora do range, tenta confirmar com status da pool
             if not in_range_now:
-                dex = params.get("dex", "") or ""
-                alias = params.get("alias", "") or ""
-
-                try:
-                    st = await self._lp_client.get_status(dex, alias)
-                except Exception as exc:
-                    self._logger.warning(
-                        "lp_client.get_status failed; keeping Binance/episode values. dex=%s alias=%s err=%s",
-                        dex,
-                        alias,
-                        exc,
-                    )
-                    st = None
-
-                if st:
-                    try:
-                        prices = st.get("prices", {}) or {}
-
-                        # --- current price ---
-                        cur = prices.get("current", {}) or {}
-                        p_pool_raw = cur.get("p_t1_t0", None)
-                        if p_pool_raw is not None:
-                            p_pool = float(p_pool_raw)
-                            if p_pool > 0.0:
-                                P = p_pool  # agora P é da pool
-
-                        # --- range (Pa_cur/Pb_cur) ---
-                        t_lower_raw = st.get("lower", None)
-                        t_upper_raw = st.get("upper", None)
-
-                        p_low_blk = prices.get("lower", {}) or {}
-                        p_up_blk = prices.get("upper", {}) or {}
-
-                        t_low_blk = p_low_blk.get("tick", None)
-                        t_up_blk = p_up_blk.get("tick", None)
-
-                        tA = t_lower_raw if t_lower_raw is not None else t_low_blk
-                        tB = t_upper_raw if t_upper_raw is not None else t_up_blk
-
-                        if tA is not None and tB is not None:
-                            tA = int(tA)
-                            tB = int(tB)
-                            t_low = min(tA, tB)
-
-                            # identifica qual bloco é o "lower" real via tick
-                            if t_low_blk is not None and int(t_low_blk) == t_low:
-                                pa_raw = p_low_blk.get("p_t1_t0", None)
-                                pb_raw = p_up_blk.get("p_t1_t0", None)
-                            elif t_up_blk is not None and int(t_up_blk) == t_low:
-                                pa_raw = p_up_blk.get("p_t1_t0", None)
-                                pb_raw = p_low_blk.get("p_t1_t0", None)
-                            else:
-                                pa_raw = p_low_blk.get("p_t1_t0", None)
-                                pb_raw = p_up_blk.get("p_t1_t0", None)
-
-                            if pa_raw is not None and pb_raw is not None:
-                                pa = float(pa_raw)
-                                pb = float(pb_raw)
-                                if pa > 0.0 and pb > 0.0:
-                                    Pa_cur, Pb_cur = (pa, pb) if pa < pb else (pb, pa)
-
-                    except Exception as exc:
-                        self._logger.warning(
-                            "invalid status payload; keeping Binance/episode values. dex=%s alias=%s err=%s status=%s",
-                            dex,
-                            alias,
-                            exc,
-                            st,
-                        )
+                P, Pa_cur, Pb_cur, _ = await self._try_override_from_pool(
+                    params=params,
+                    P=P,
+                    Pa=Pa_cur,
+                    Pb=Pb_cur,
+                )
 
                 # reavalia range com os valores possivelmente corrigidos pela pool
-                in_range_now = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
+                in_range_now = self._is_in_range(P, Pa_cur, Pb_cur, eps)
                 if in_range_now:
                     # se a pool disse que está dentro, não faz nada neste candle
                     continue
@@ -536,8 +578,6 @@ class EvaluateActiveStrategiesUseCase:
                 "last_event_bar": i_since_open
             })
 
-            in_range_now = (Pa_cur < P < Pb_cur)
-            
             # se estiver travado em high_vol_down fora de low-vol, NÃO gera trigger nenhum
             if not forced_high_vol_down_locked:
                 if out_above_streak >= breakout_confirm:
@@ -625,93 +665,16 @@ class EvaluateActiveStrategiesUseCase:
                 continue
             
             # override P + (Pa_cur, Pb_cur) with real price/range from pool status (best-effort; fallback to episode/Binance)
-            dex = params.get("dex", "") or ""
-            alias = params.get("alias", "") or ""
-
-            try:
-                st = await self._lp_client.get_status(dex, alias)
-            except Exception as exc:
-                self._logger.warning(
-                    "lp_client.get_status failed; keeping Binance/episode values. dex=%s alias=%s err=%s",
-                    dex,
-                    alias,
-                    exc,
-                )
-                st = None
-            
-            p_from_pool = False
-            if st:
-                try:
-                    prices = st.get("prices", {}) or {}
-
-                    # --- current price ---
-                    cur = prices.get("current", {}) or {}
-                    p_pool_raw = cur.get("p_t1_t0", None)
-                    if p_pool_raw is not None:
-                        try:
-                            p_pool = float(p_pool_raw)
-                            if p_pool > 0.0:
-                                P = p_pool
-                                p_from_pool = True
-                        except Exception:
-                            p_from_pool = False
-
-                    # --- range (Pa_cur/Pb_cur) ---
-                    # We trust ticks to define ordering; prices blocks might be swapped.
-                    t_lower_raw = st.get("lower", None)
-                    t_upper_raw = st.get("upper", None)
-
-                    p_low_blk = prices.get("lower", {}) or {}
-                    p_up_blk = prices.get("upper", {}) or {}
-
-                    # prefer ticks from price blocks if present
-                    t_low_blk = p_low_blk.get("tick", None)
-                    t_up_blk = p_up_blk.get("tick", None)
-
-                    # choose ticks source
-                    tA = t_lower_raw if t_lower_raw is not None else t_low_blk
-                    tB = t_upper_raw if t_upper_raw is not None else t_up_blk
-
-                    if tA is not None and tB is not None:
-                        tA = int(tA)
-                        tB = int(tB)
-                        t_low = min(tA, tB)
-                        t_up = max(tA, tB)
-
-                        # map price blocks to correct side by matching tick
-                        # (sometimes "lower"/"upper" blocks can come swapped)
-                        if t_low_blk is not None and int(t_low_blk) == t_low:
-                            pa_raw = p_low_blk.get("p_t1_t0", None)
-                            pb_raw = p_up_blk.get("p_t1_t0", None)
-                        elif t_up_blk is not None and int(t_up_blk) == t_low:
-                            # swapped blocks
-                            pa_raw = p_up_blk.get("p_t1_t0", None)
-                            pb_raw = p_low_blk.get("p_t1_t0", None)
-                        else:
-                            # fallback: use ordering by numeric price if both exist
-                            pa_raw = p_low_blk.get("p_t1_t0", None)
-                            pb_raw = p_up_blk.get("p_t1_t0", None)
-
-                        if pa_raw is not None and pb_raw is not None:
-                            pa = float(pa_raw)
-                            pb = float(pb_raw)
-                            if pa > 0.0 and pb > 0.0:
-                                Pa_cur, Pb_cur = (pa, pb) if pa < pb else (pb, pa)
-
-                except Exception as exc:
-                    self._logger.warning(
-                        "invalid status payload; keeping Binance/episode values. dex=%s alias=%s err=%s status=%s",
-                        dex,
-                        alias,
-                        exc,
-                        st,
-                    )
+            P, Pa_cur, Pb_cur, p_from_pool = await self._try_override_from_pool(
+                params=params,
+                P=P,
+                Pa=Pa_cur,
+                Pb=Pb_cur,
+            )
 
             # verify if P is in range of last position (with eps margin)
-            if p_from_pool:
-                in_range_pool = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
-                if in_range_pool:
-                    continue
+            if p_from_pool and self._is_in_range(P, Pa_cur, Pb_cur, eps):
+                continue
 
             # 6) fechar episódio atual
             now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
