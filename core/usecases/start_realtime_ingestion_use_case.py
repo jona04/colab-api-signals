@@ -91,7 +91,7 @@ class StartRealtimeIngestionUseCase:
                 try:
                     active_sets = await self._indicator_set_repo.get_active_by_symbol(self._symbol)
                     for indset in active_sets:
-                        snapshot = await self._compute_indicators.execute_for_indicator_set(
+                        indicator_snapshot = await self._compute_indicators.execute_for_indicator_set(
                             symbol=self._symbol,
                             interval=self._interval,
                             ema_fast=int(indset.ema_fast),
@@ -100,10 +100,10 @@ class StartRealtimeIngestionUseCase:
                             indicator_set_id=indset.cfg_hash,
                             cfg_hash=indset.cfg_hash,
                         )
-                        if snapshot:
-                            await self._evaluate_uc.execute_for_snapshot(
+                        if indicator_snapshot:
+                            await self._evaluate_uc.execute_for_indicator_snapshot(
                                 indicator_set=indset.model_dump(mode="python"),
-                                snapshot=snapshot,
+                                indicator_snapshot=indicator_snapshot,
                             )
                 except Exception as exc:
                     self._logger.exception("Failed to compute indicators/evaluate strategies: %s", exc)

@@ -203,15 +203,6 @@ class EvaluateActiveStrategiesUseCase:
         """
         Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
         """
-        # override P with real real price from position
-        dex=params.get("dex", "")
-        alias=params.get("alias", "")
-        st = await self._lp_client.get_status(dex, alias)
-        if st:
-            prices = st.get("prices", {}) or {}
-            cur = prices.get("current", {}) or {}
-            P = float(cur.get("p_t1_t0", 0.0))
-        
         tiers: List[Dict] = list(params.get("tiers", []))
         
         # skew base
@@ -286,15 +277,15 @@ class EvaluateActiveStrategiesUseCase:
         return 0, 0, out_above_streak_total, out_below_streak_total
 
     # ===== execute =====
-    async def execute_for_snapshot(self, indicator_set: Dict, snapshot: Dict) -> None:
-        symbol = snapshot["symbol"]
-        P = float(snapshot["close"])
-        ema_f = float(snapshot["ema_fast"])
-        ema_s = float(snapshot["ema_slow"])
-        atr_pct = float(snapshot["atr_pct"])
-        ts = int(snapshot["ts"])
+    async def execute_for_indicator_snapshot(self, indicator_set: Dict, indicator_snapshot: Dict) -> None:
+        symbol = indicator_snapshot["symbol"]
+        P = float(indicator_snapshot["close"])
+        ema_f = float(indicator_snapshot["ema_fast"])
+        ema_s = float(indicator_snapshot["ema_slow"])
+        atr_pct = float(indicator_snapshot["atr_pct"])
+        ts = int(indicator_snapshot["ts"])
         
-        created_at_iso = snapshot.get("created_at_iso")
+        created_at_iso = indicator_snapshot.get("created_at_iso")
         if created_at_iso:
             # trata o 'Z' do final como UTC
             if created_at_iso.endswith("Z"):
@@ -381,7 +372,7 @@ class EvaluateActiveStrategiesUseCase:
                     target_major_pct=major_pct,
                     target_minor_pct=minor_pct,
                     open_time=ts,
-                    open_time_iso=snapshot.get("created_at_iso"),
+                    open_time_iso=indicator_snapshot.get("created_at_iso"),
                     open_price=P,
                     Pa=Pa,
                     Pb=Pb,
@@ -447,11 +438,95 @@ class EvaluateActiveStrategiesUseCase:
             atr_streaks: Dict = dict(current.atr_streak)
             
             trigger: Optional[str] = None
+            
+            # 2) primeiro: decide se vale a pena consultar o pool
+            in_range_now = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
 
-            # 2) atualiza streaks de breakout e verifica confirmação
+            # se Binance acusou fora do range, tenta confirmar com status da pool
+            if not in_range_now:
+                dex = params.get("dex", "") or ""
+                alias = params.get("alias", "") or ""
+
+                try:
+                    st = await self._lp_client.get_status(dex, alias)
+                except Exception as exc:
+                    self._logger.warning(
+                        "lp_client.get_status failed; keeping Binance/episode values. dex=%s alias=%s err=%s",
+                        dex,
+                        alias,
+                        exc,
+                    )
+                    st = None
+
+                if st:
+                    try:
+                        prices = st.get("prices", {}) or {}
+
+                        # --- current price ---
+                        cur = prices.get("current", {}) or {}
+                        p_pool_raw = cur.get("p_t1_t0", None)
+                        if p_pool_raw is not None:
+                            p_pool = float(p_pool_raw)
+                            if p_pool > 0.0:
+                                P = p_pool  # agora P é da pool
+
+                        # --- range (Pa_cur/Pb_cur) ---
+                        t_lower_raw = st.get("lower", None)
+                        t_upper_raw = st.get("upper", None)
+
+                        p_low_blk = prices.get("lower", {}) or {}
+                        p_up_blk = prices.get("upper", {}) or {}
+
+                        t_low_blk = p_low_blk.get("tick", None)
+                        t_up_blk = p_up_blk.get("tick", None)
+
+                        tA = t_lower_raw if t_lower_raw is not None else t_low_blk
+                        tB = t_upper_raw if t_upper_raw is not None else t_up_blk
+
+                        if tA is not None and tB is not None:
+                            tA = int(tA)
+                            tB = int(tB)
+                            t_low = min(tA, tB)
+
+                            # identifica qual bloco é o "lower" real via tick
+                            if t_low_blk is not None and int(t_low_blk) == t_low:
+                                pa_raw = p_low_blk.get("p_t1_t0", None)
+                                pb_raw = p_up_blk.get("p_t1_t0", None)
+                            elif t_up_blk is not None and int(t_up_blk) == t_low:
+                                pa_raw = p_up_blk.get("p_t1_t0", None)
+                                pb_raw = p_low_blk.get("p_t1_t0", None)
+                            else:
+                                pa_raw = p_low_blk.get("p_t1_t0", None)
+                                pb_raw = p_up_blk.get("p_t1_t0", None)
+
+                            if pa_raw is not None and pb_raw is not None:
+                                pa = float(pa_raw)
+                                pb = float(pb_raw)
+                                if pa > 0.0 and pb > 0.0:
+                                    Pa_cur, Pb_cur = (pa, pb) if pa < pb else (pb, pa)
+
+                    except Exception as exc:
+                        self._logger.warning(
+                            "invalid status payload; keeping Binance/episode values. dex=%s alias=%s err=%s status=%s",
+                            dex,
+                            alias,
+                            exc,
+                            st,
+                        )
+
+                # reavalia range com os valores possivelmente corrigidos pela pool
+                in_range_now = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
+                if in_range_now:
+                    # se a pool disse que está dentro, não faz nada neste candle
+                    continue
+                
+           # 2b) agora sim: atualiza streaks usando P/Pa/Pb "definitivos" (pool quando necessário)
             out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total = self._update_breakout_streaks(
-                P, Pa_cur, Pb_cur, eps, out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total
+                P, Pa_cur, Pb_cur, eps,
+                out_above_streak, out_below_streak,
+                out_above_streak_total, out_below_streak_total,
             )
+
             # persiste os contadores mesmo sem evento
             await self._episode_repo.update_partial(current.id, {
                 "out_above_streak": out_above_streak,
@@ -548,6 +623,95 @@ class EvaluateActiveStrategiesUseCase:
             # 5) sem gatilho -> segue
             if not trigger:
                 continue
+            
+            # override P + (Pa_cur, Pb_cur) with real price/range from pool status (best-effort; fallback to episode/Binance)
+            dex = params.get("dex", "") or ""
+            alias = params.get("alias", "") or ""
+
+            try:
+                st = await self._lp_client.get_status(dex, alias)
+            except Exception as exc:
+                self._logger.warning(
+                    "lp_client.get_status failed; keeping Binance/episode values. dex=%s alias=%s err=%s",
+                    dex,
+                    alias,
+                    exc,
+                )
+                st = None
+            
+            p_from_pool = False
+            if st:
+                try:
+                    prices = st.get("prices", {}) or {}
+
+                    # --- current price ---
+                    cur = prices.get("current", {}) or {}
+                    p_pool_raw = cur.get("p_t1_t0", None)
+                    if p_pool_raw is not None:
+                        try:
+                            p_pool = float(p_pool_raw)
+                            if p_pool > 0.0:
+                                P = p_pool
+                                p_from_pool = True
+                        except Exception:
+                            p_from_pool = False
+
+                    # --- range (Pa_cur/Pb_cur) ---
+                    # We trust ticks to define ordering; prices blocks might be swapped.
+                    t_lower_raw = st.get("lower", None)
+                    t_upper_raw = st.get("upper", None)
+
+                    p_low_blk = prices.get("lower", {}) or {}
+                    p_up_blk = prices.get("upper", {}) or {}
+
+                    # prefer ticks from price blocks if present
+                    t_low_blk = p_low_blk.get("tick", None)
+                    t_up_blk = p_up_blk.get("tick", None)
+
+                    # choose ticks source
+                    tA = t_lower_raw if t_lower_raw is not None else t_low_blk
+                    tB = t_upper_raw if t_upper_raw is not None else t_up_blk
+
+                    if tA is not None and tB is not None:
+                        tA = int(tA)
+                        tB = int(tB)
+                        t_low = min(tA, tB)
+                        t_up = max(tA, tB)
+
+                        # map price blocks to correct side by matching tick
+                        # (sometimes "lower"/"upper" blocks can come swapped)
+                        if t_low_blk is not None and int(t_low_blk) == t_low:
+                            pa_raw = p_low_blk.get("p_t1_t0", None)
+                            pb_raw = p_up_blk.get("p_t1_t0", None)
+                        elif t_up_blk is not None and int(t_up_blk) == t_low:
+                            # swapped blocks
+                            pa_raw = p_up_blk.get("p_t1_t0", None)
+                            pb_raw = p_low_blk.get("p_t1_t0", None)
+                        else:
+                            # fallback: use ordering by numeric price if both exist
+                            pa_raw = p_low_blk.get("p_t1_t0", None)
+                            pb_raw = p_up_blk.get("p_t1_t0", None)
+
+                        if pa_raw is not None and pb_raw is not None:
+                            pa = float(pa_raw)
+                            pb = float(pb_raw)
+                            if pa > 0.0 and pb > 0.0:
+                                Pa_cur, Pb_cur = (pa, pb) if pa < pb else (pb, pa)
+
+                except Exception as exc:
+                    self._logger.warning(
+                        "invalid status payload; keeping Binance/episode values. dex=%s alias=%s err=%s status=%s",
+                        dex,
+                        alias,
+                        exc,
+                        st,
+                    )
+
+            # verify if P is in range of last position (with eps margin)
+            if p_from_pool:
+                in_range_pool = (P > Pa_cur * (1.0 + eps)) and (P < Pb_cur * (1.0 - eps))
+                if in_range_pool:
+                    continue
 
             # 6) fechar episódio atual
             now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -636,7 +800,7 @@ class EvaluateActiveStrategiesUseCase:
                     target_major_pct=major_pct,
                     target_minor_pct=minor_pct,
                     open_time=ts,
-                    open_time_iso=snapshot.get("created_at_iso"),
+                    open_time_iso=indicator_snapshot.get("created_at_iso"),
                     open_price=P,
                     Pa=Pa_new,
                     Pb=Pb_new,
@@ -713,7 +877,7 @@ class EvaluateActiveStrategiesUseCase:
                         chosen_tier = tier
                         break
                 if chosen_tier:
-                    new_ep = _open_with_width(
+                    new_ep = await _open_with_width(
                         chosen_tier["name"],
                         float(chosen_tier["max_major_side_pct"])
                     )
