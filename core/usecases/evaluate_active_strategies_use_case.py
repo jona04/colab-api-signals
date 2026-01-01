@@ -231,6 +231,7 @@ class EvaluateActiveStrategiesUseCase:
             tA = int(tA)
             tB = int(tB)
             t_low = min(tA, tB)
+            t_up  = max(tA, tB)
 
             if t_low_blk is not None and int(t_low_blk) == t_low:
                 pa_raw = p_low_blk.get("p_t1_t0", None)
