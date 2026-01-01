@@ -568,8 +568,8 @@ class EvaluateActiveStrategiesUseCase:
                 out_above_streak_total, out_below_streak_total,
             )
 
-            # Pperiodic pool truth check using last_event_bar + breakout_confirm ---
-            # Rule: if last_event_bar % breakout_confirm == 0 -> check pool and if pool is out, trigger breakout.
+            # Pperiodic pool truth check using i_since_open + breakout_confirm ---
+            # Rule: if i_since_open % breakout_confirm == 0 -> check pool and if pool is out, trigger breakout.
             # IMPORTANT: do NOT do it when locked (forced_high_vol_down_locked).
             do_periodic_pool_check = (
                 (not forced_high_vol_down_locked)
@@ -609,10 +609,13 @@ class EvaluateActiveStrategiesUseCase:
 
             # se estiver travado em high_vol_down fora de low-vol, NÃO gera trigger nenhum
             if not forced_high_vol_down_locked:
-                if out_above_streak >= breakout_confirm:
-                    trigger = "cross_max"
-                elif out_below_streak >= breakout_confirm:
-                    trigger = "cross_min"
+                
+                # evita que sobrescreva o trigger do do_periodic_pool_check
+                if not trigger:
+                    if out_above_streak >= breakout_confirm:
+                        trigger = "cross_max"
+                    elif out_below_streak >= breakout_confirm:
+                        trigger = "cross_min"
 
                 # 3) gate high vol (evita reabrir se já high_vol)
                 if not trigger:
