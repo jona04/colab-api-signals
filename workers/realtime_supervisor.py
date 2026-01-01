@@ -120,6 +120,7 @@ class RealtimeSupervisor:
             episode_repo=episode_repo,
             signal_repo=signal_repo,
             reconciling_service=reconciler,
+            lp_client=pipeline_http
         )
 
         # Signal executor use case (background loop)

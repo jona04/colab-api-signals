@@ -2,6 +2,7 @@ from datetime import datetime, time, timezone
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
 from core.domain.entities.signal_entity import SignalEntity, SignalStep
 from core.domain.entities.strategy_entity import StrategyEntity
 from core.domain.entities.strategy_episode_entity import StrategyEpisodeEntity
@@ -65,12 +66,14 @@ class EvaluateActiveStrategiesUseCase:
         episode_repo: StrategyEpisodeRepository,
         signal_repo: SignalRepository,
         reconciling_service: StrategyReconcilerService,
+        lp_client: PipelineHttpClient,
         logger: Optional[logging.Logger] = None,
     ):
         self._strategy_repo = strategy_repo
         self._episode_repo = episode_repo
         self._signal_repo = signal_repo
         self._reconciler = reconciling_service
+        self._lp_client = lp_client
         self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @staticmethod
@@ -188,7 +191,7 @@ class EvaluateActiveStrategiesUseCase:
         scale = total_width_pct / base_sum
         return pct_below_base * scale, pct_above_base * scale
 
-    def _pick_band_for_trend_totalwidth(
+    async def _pick_band_for_trend_totalwidth(
         self,
         P: float,
         trend: str,
@@ -200,6 +203,15 @@ class EvaluateActiveStrategiesUseCase:
         """
         Gera (Pa,Pb) assumindo que 'max_major_side_pct' e afins são LARGURA TOTAL do range.
         """
+        # override P with real real price from position
+        dex=params.get("dex", "")
+        alias=params.get("alias", "")
+        st = await self._lp_client.get_status(dex, alias)
+        if st:
+            prices = st.get("prices", {}) or {}
+            cur = prices.get("current", {}) or {}
+            P = float(cur.get("p_t1_t0", 0.0))
+        
         tiers: List[Dict] = list(params.get("tiers", []))
         
         # skew base
@@ -343,7 +355,7 @@ class EvaluateActiveStrategiesUseCase:
                     )
                     
                 # abre primeira banda centrada pela tendência
-                Pa, Pb, mode, majority, _, pct_below_base, pct_above_base = self._pick_band_for_trend_totalwidth(
+                Pa, Pb, mode, majority, _, pct_below_base, pct_above_base = await self._pick_band_for_trend_totalwidth(
                     P, 
                     trend_for_pick, 
                     params, 
@@ -556,7 +568,7 @@ class EvaluateActiveStrategiesUseCase:
             current.close_price = P
             
             # helper para abrir com "total width"; aplica preserve quando aplicável
-            def _open_with_width(next_pool_type: str, total_width_override: Optional[float]) -> StrategyEpisodeEntity:
+            async def _open_with_width(next_pool_type: str, total_width_override: Optional[float]) -> StrategyEpisodeEntity:
                 # decide se é low-vol efetivo neste snapshot
                 is_low_vol_now = self._is_effectively_low_vol(
                     dt_now,
@@ -597,7 +609,7 @@ class EvaluateActiveStrategiesUseCase:
                 total_width_pct = max(total_width_pct, 2e-6)
                 
                 Pa_new, Pb_new, mode_now, majority_now, _, pct_below_base, pct_above_base = \
-                    self._pick_band_for_trend_totalwidth(
+                    await self._pick_band_for_trend_totalwidth(
                         P,
                         trend_for_pick,
                         params,
@@ -668,18 +680,18 @@ class EvaluateActiveStrategiesUseCase:
                         break
                         
                 if chosen_tier:
-                    new_ep = _open_with_width(
+                    new_ep = await _open_with_width(
                         chosen_tier["name"],
                         float(chosen_tier["max_major_side_pct"])
                     )
                 else:
-                    new_ep = _open_with_width(
+                    new_ep =await  _open_with_width(
                         "standard",
                         float(params.get("standard_max_major_side_pct", 0.05))
                     )
                     
             elif trigger == "high_vol":
-                new_ep = _open_with_width("high_vol", float(params.get("high_vol_max_major_side_pct", 0.10)))
+                new_ep = await _open_with_width("high_vol", float(params.get("high_vol_max_major_side_pct", 0.10)))
             elif trigger.startswith("tighten_"):
                 chosen_tier = None
                 for tier in reversed(tiers_cfg):
@@ -706,7 +718,7 @@ class EvaluateActiveStrategiesUseCase:
                         float(chosen_tier["max_major_side_pct"])
                     )
                 else:
-                    new_ep = _open_with_width(
+                    new_ep = await _open_with_width(
                         "standard",
                         float(params.get("standard_max_major_side_pct", 0.05))
                     )
