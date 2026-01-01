@@ -559,9 +559,6 @@ class EvaluateActiveStrategiesUseCase:
 
                 # reavalia range com os valores possivelmente corrigidos pela pool
                 in_range_now = self._is_in_range(P, Pa_cur, Pb_cur, eps)
-                if in_range_now:
-                    # se a pool disse que está dentro, não faz nada neste candle
-                    continue
                 
            # 2b) agora sim: atualiza streaks usando P/Pa/Pb "definitivos" (pool quando necessário)
             out_above_streak, out_below_streak, out_above_streak_total, out_below_streak_total = self._update_breakout_streaks(
