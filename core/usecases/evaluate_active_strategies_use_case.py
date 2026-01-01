@@ -671,7 +671,7 @@ class EvaluateActiveStrategiesUseCase:
             )
 
             # verify if P is in range of last position (with eps margin)
-            print("P", P, strat.name,Pa_cur, Pb_cur, p_from_pool)
+            print("P", P, strat.name,Pa_cur, Pb_cur, p_from_pool, self._is_in_range(P, Pa_cur, Pb_cur, eps))
             if p_from_pool and self._is_in_range(P, Pa_cur, Pb_cur, eps):
                 continue
 
