@@ -574,7 +574,7 @@ class EvaluateActiveStrategiesUseCase:
             do_periodic_pool_check = (
                 (not forced_high_vol_down_locked)
                 and breakout_confirm > 0
-                and (i_since_open % breakout_confirm == 0)
+                and (i_since_open % (breakout_confirm + 10) == 0)
             )
             
             if do_periodic_pool_check:
