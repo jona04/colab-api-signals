@@ -16,11 +16,6 @@ from adapters.external.pipeline.pipeline_http_client import PipelineHttpClient
 
 USD_SET = {"USDC","USDBC","USDCE","USDT","DAI","USDD","USDP","BUSD"}
 
-def _bson_safe(value) -> dict:
-    # recursivo
-    if isinstance(value, dict):
-        return {k: _bson_safe(v) for k, v in value.items()}
-    return value
 
 class ExecuteSignalPipelineUseCase:
     """
@@ -209,15 +204,22 @@ class ExecuteSignalPipelineUseCase:
     ) -> None:
         """
         Helper: push a log line into the episode doc, if we have an episode_id.
+
+        IMPORTANT:
+        - Mongo only supports int64. Onchain payloads often contain huge ints (sqrtPriceX96 etc).
+        - sanitize_for_bson must be applied to avoid BSON int overflow.
         """
         if not episode_id:
             return
         try:
-            payload = _bson_safe(base)
+            payload = sanitize_for_bson(base)
             await self._episode_repo.append_execution_log(episode_id, payload)
         except Exception as log_exc:
-            # logging de fallback pra não matar o fluxo
-            self._logger.warning("Failed to append_execution_log for %s: %s", episode_id, log_exc)
+            self._logger.warning(
+                "Failed to append_execution_log for %s: %s",
+                episode_id,
+                log_exc,
+            )
 
 
     async def _process_single_signal(self, sig: SignalEntity) -> bool:
