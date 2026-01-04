@@ -6,73 +6,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from core.domain.entities.strategy_entity import StrategyEntity
 
 from .deps import get_db
-from ...external.database.indicator_set_repository_mongodb import IndicatorSetRepositoryMongoDB
 from ...external.database.strategy_repository_mongodb import StrategyRepositoryMongoDB
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-# =========================
-# Indicator Sets (POST/GET)
-# =========================
-
-class IndicatorSetCreateDTO(BaseModel):
-    symbol: str = Field(..., examples=["ETHUSDT"])
-    ema_fast: int = Field(..., ge=1)
-    ema_slow: int = Field(..., ge=1)
-    atr_window: int = Field(..., ge=1)
-
-    @field_validator("symbol")
-    @classmethod
-    def upper_symbol(cls, v: str) -> str:
-        return v.upper()
-
-class IndicatorSetOutDTO(BaseModel):
-    symbol: str
-    ema_fast: int
-    ema_slow: int
-    atr_window: int
-    status: str
-    cfg_hash: str
-    created_at: Optional[int] = None
-    created_at_iso: Optional[str] = None
-    updated_at: Optional[int] = None
-
-@router.post("/indicator-sets", response_model=IndicatorSetOutDTO)
-async def create_indicator_set(dto: IndicatorSetCreateDTO, db: AsyncIOMotorDatabase = Depends(get_db)):
-    """
-    Upsert an ACTIVE indicator set (unique per tuple).
-    Returns the stored doc including cfg_hash (used as logical id).
-    """
-    repo = IndicatorSetRepositoryMongoDB(db)
-    stored = await repo.upsert_active({
-        "symbol": dto.symbol,
-        "ema_fast": dto.ema_fast,
-        "ema_slow": dto.ema_slow,
-        "atr_window": dto.atr_window,
-        "status": "ACTIVE",
-    })
-    if not stored:
-        raise HTTPException(status_code=500, detail="Failed to upsert indicator set")
-    return stored
-
-@router.get("/indicator-sets", response_model=List[IndicatorSetOutDTO])
-async def list_indicator_sets(
-    symbol: Optional[str] = Query(None),
-    status: Optional[str] = Query("ACTIVE"),
-    db: AsyncIOMotorDatabase = Depends(get_db),
-):
-    """
-    List indicator sets (optionally filtered by symbol/status).
-    """
-    repo = IndicatorSetRepositoryMongoDB(db)
-    q: Dict = {}
-    if symbol:
-        q["symbol"] = symbol.upper()
-    if status:
-        q["status"] = status
-    col = db[repo.COLLECTION]
-    cursor = col.find(q, projection={"_id": False})
-    return await cursor.to_list(length=None)
 
 # =========================
 # Strategies (POST)
@@ -143,7 +79,6 @@ class StrategyOutDTO(BaseModel):
     symbol: str
     status: str
     indicator_set_id: Optional[str] = None
-    cfg_hash: Optional[str] = None
     params: Optional[StrategyParamsDTO] = None
     created_at: Optional[int] = None
     created_at_iso: Optional[str] = None
@@ -155,14 +90,6 @@ async def create_strategy(dto: StrategyCreateDTO, db: AsyncIOMotorDatabase = Dep
     Create or upsert a Strategy linked to an indicator set.
     'indicator_set_id' must be the cfg_hash returned by /indicator-sets.
     """
-    indset_repo = IndicatorSetRepositoryMongoDB(db)
-    # Validate that the indicator_set exists and is ACTIVE
-    set_doc = await indset_repo.get_by_id(dto.indicator_set_id) or await db[indset_repo.COLLECTION].find_one(
-        {"cfg_hash": dto.indicator_set_id, "status": "ACTIVE"}, projection={"_id": False}
-    )
-    if not set_doc:
-        raise HTTPException(status_code=404, detail="Indicator set not found or not active")
-
     # Store strategy with indicator_set_id and cfg_hash (same logical id here)
     strat_repo = StrategyRepositoryMongoDB(db)
     stored = await strat_repo.upsert(

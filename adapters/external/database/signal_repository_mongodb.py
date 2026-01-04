@@ -46,9 +46,7 @@ class SignalRepositoryMongoDB(SignalRepository):
         key = {
             "strategy_id": signal.strategy_id,
             "ts": signal.ts,
-            "signal_type": signal.signal_type.value
-            if isinstance(signal.signal_type, SignalType)
-            else signal.signal_type,
+            "signal_type": _norm_signal_type(signal.signal_type)
         }
         
         # não sobreescrever status/attempts em update normal

@@ -26,8 +26,3 @@ class StrategyRepository(ABC):
     async def get_active_by_indicator_set(self, indicator_set_id: str) -> List[StrategyEntity]:
         """Return all ACTIVE strategies for a given indicator_set_id."""
         raise NotImplementedError
-
-    @abstractmethod
-    async def get_by_id(self, strategy_id: str) -> Optional[StrategyEntity]:
-        """Return one strategy by id."""
-        raise NotImplementedError

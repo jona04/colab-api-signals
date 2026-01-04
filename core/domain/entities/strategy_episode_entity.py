@@ -1,6 +1,6 @@
 # core/domain/entities/strategy_episode_entity.py
 from typing import Any, Dict, List, Optional
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from .base_entity import MongoEntity
 
 class StrategyEpisodeEntity(MongoEntity):
@@ -22,7 +22,8 @@ class StrategyEpisodeEntity(MongoEntity):
 
     last_event_bar: int = 0
 
-    atr_streak: Dict[str, int] = {}
+    atr_streak: Dict[str, int] = Field(default_factory=dict)
+
     out_above_streak: int = 0
     out_below_streak: int = 0
     out_above_streak_total: int = 0

@@ -12,13 +12,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # network_mode: "host" 
 
   api-signals:
     build:
       context: .
       dockerfile: ./Dockerfile
-      # network: host
     container_name: api-signals
     restart: always
     env_file:
@@ -31,7 +29,8 @@ services:
     volumes:
       - .:/app:delegated
     working_dir: /app
-    # network_mode: "host"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   mongo_data:

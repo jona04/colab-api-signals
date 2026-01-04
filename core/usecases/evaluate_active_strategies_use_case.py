@@ -13,7 +13,6 @@ from ..services.strategy_reconciler_service import StrategyReconcilerService
 from ..repositories.strategy_repository import StrategyRepository
 from ..repositories.strategy_episode_repository import StrategyEpisodeRepository
 from ..repositories.signal_repository import SignalRepository
-from ..repositories.indicator_set_repository import IndicatorSetRepository
 
 # LOW-VOL WINDOWS (hardcoded por enquanto; futuramente virá de Strategy.params["low_vol_keys"])
 LOW_VOL_KEYS_DEFAULT = {

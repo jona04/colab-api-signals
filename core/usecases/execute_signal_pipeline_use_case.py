@@ -4,6 +4,8 @@ import logging
 from math import sqrt
 from typing import Dict, List, Optional, Tuple
 
+from pydantic import Field
+
 from adapters.external.notify.telegram_notifier import TelegramNotifier
 from core.common.utils import sanitize_for_bson
 from core.domain.entities.signal_entity import SignalEntity
@@ -53,7 +55,8 @@ class ExecuteSignalPipelineUseCase:
         self._base_backoff = base_backoff_sec
         self._notifier = notifier
         self._idempotency = idempotency_service or IdempotencyKeyService()
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = Field(default_factory=dict)
+
         self._locks_lock = asyncio.Lock()  # pra criar locks de forma segura
         self._max_parallel = max_parallel
         self._semaphore = asyncio.Semaphore(self._max_parallel)
@@ -494,7 +497,7 @@ class ExecuteSignalPipelineUseCase:
                         amount_in_tokens = abs(falta_usd) / max(usd_per_in, 1e-18)
                         
                         # --------------- Teto por saldo disponível do token_in ---------------
-                        bal_in_tokens = amt1 if token_in_addr.lower() == (t1_addr or "").lower() else amt0
+                        bal_in_tokens = amt1 if (token_in_addr and token_in_addr.lower() == (t1_addr or "").lower()) else amt0
                         if amount_in_tokens > bal_in_tokens:
                             amount_in_tokens = bal_in_tokens
 

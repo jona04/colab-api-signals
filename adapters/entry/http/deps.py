@@ -1,11 +1,9 @@
 from fastapi import Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+
 def get_db(request: Request) -> AsyncIOMotorDatabase:
-    """
-    Resolve the Mongo database from FastAPI app state.
-    """
-    db = getattr(request.app.state, "db", None)
+    db = getattr(request.app.state, "mongo_db", None)
     if db is None:
-        raise RuntimeError("Database is not initialized in app.state.db")
+        raise RuntimeError("MongoDB database not initialized. Check app lifespan startup.")
     return db

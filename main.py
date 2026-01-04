@@ -5,14 +5,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from adapters.entry.http.admin_router import router as admin_router
+from adapters.entry.http.trigger_router import router as triggers_router
 
-from workers.realtime_supervisor import RealtimeSupervisor
+from adapters.external.database.mongodb_client import get_mongo_client
+from config.settings import settings
 
 
-def _setup_logging():
-    """
-    Configure basic logging. You can later replace this with structlog JSON logs.
-    """
+def _setup_logging() -> None:
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=log_level,
@@ -20,34 +19,46 @@ def _setup_logging():
     )
 
 
-supervisor = RealtimeSupervisor()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan context for startup/shutdown lifecycle.
-    """
     _setup_logging()
-    logging.getLogger(__name__).info("Starting api-signals (lifespan startup)...")
-    await supervisor.start()
-    
-    app.state.db = supervisor.db
-    
-    app.include_router(admin_router)
-    
+    logger = logging.getLogger(__name__)
+    logger.info("Starting api-signals (lifespan startup)...")
+
+    mongo_client = get_mongo_client()
+    db = mongo_client[settings.MONGODB_DB_NAME]
+
+    # Guarda tudo no state (padrão bom p/ microserviços)
+    app.state.mongo_client = mongo_client
+    app.state.mongo_db = db
+
+    # Base URLs para falar com outras APIs
+    app.state.market_data_base_url = settings.MARKET_DATA_BASE_URL
+    app.state.pipeline_base_url = settings.LP_BASE_URL
+
+    try:
+        # Opcional: valida conexão cedo
+        await db.command("ping")
+        logger.info("MongoDB ping ok.")
+    except Exception:
+        logger.exception("MongoDB ping failed (startup).")
+        raise
+
     try:
         yield
     finally:
-        logging.getLogger(__name__).info("Shutting down api-signals (lifespan shutdown)...")
-        await supervisor.stop()
+        logger.info("Shutting down api-signals (lifespan shutdown)...")
+        mongo_client.close()
+        logger.info("MongoDB client closed.")
 
 
 app = FastAPI(title="api-signals", version="0.1.0", lifespan=lifespan)
 
+# Routers devem ser incluídos fora do lifespan
+app.include_router(admin_router)
+app.include_router(triggers_router)
+
+
 @app.get("/healthz")
 async def healthz():
-    """
-    Liveness probe endpoint.
-    """
     return {"status": "ok"}

@@ -1,6 +1,6 @@
 # core/domain/entities/signal_entity.py
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from ..enums.signal_enums import SignalStatus, SignalType
 from .base_entity import MongoEntity
 from .strategy_episode_entity import StrategyEpisodeEntity
@@ -8,7 +8,8 @@ from .strategy_episode_entity import StrategyEpisodeEntity
 
 class SignalStep(BaseModel):
     action: str
-    payload: Dict[str, Any] = {}
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
 
     model_config = ConfigDict(extra="ignore")
 

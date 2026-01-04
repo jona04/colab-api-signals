@@ -49,7 +49,3 @@ class StrategyRepositoryMongoDB(StrategyRepository):
         )
         docs = await cursor.to_list(length=None)
         return [StrategyEntity.from_mongo(d) for d in docs if d]
-
-    async def get_by_id(self, strategy_id: str) -> Optional[StrategyEntity]:
-        doc = await self._col.find_one({"_id": strategy_id})
-        return StrategyEntity.from_mongo(doc)
